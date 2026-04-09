@@ -1,0 +1,13 @@
+{
+  "name": "bowlsteam",
+  "version": "1.0.0",
+  "private": true,
+  "devDependencies": {
+    "wrangler": "^4.75.0"
+  },
+  "scripts": {
+    "dev": "wrangler dev",
+    "db:init": "wrangler d1 execute bowlsteam-db --local --file=schema.sql",
+    "deploy": "wrangler deploy"
+  }
+}
