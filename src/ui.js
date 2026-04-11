@@ -88,7 +88,11 @@ export function renderHtml() {
     .role-picker button { padding: 4px 10px; font-size: 0.75rem; border-radius: 6px; border: 1.5px solid #ddd; background: white; color: #666; cursor: pointer; font-weight: 500; }
     .role-picker button.active-core { background: #2563eb; color: white; border-color: #2563eb; }
     .role-picker button.active-reserve { background: #7c3aed; color: white; border-color: #7c3aed; }
-    .role-picker button.active-skip { background: #e5e7eb; color: #999; border-color: #e5e7eb; }
+    .role-picker button.active-skip { background: #9ca3af; color: white; border-color: #9ca3af; }
+    .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #1a1a1a; color: white; padding: 10px 20px; border-radius: 8px; font-size: 0.9rem; z-index: 999; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
+    .toast.show { opacity: 1; }
+    .toast.error { background: #dc2626; }
+    .badge-ready { background: #dbeafe; color: #2563eb; }
     .method-card { border: 2px solid #e5e7eb; border-radius: 10px; padding: 14px; margin-bottom: 8px; cursor: pointer; }
     .method-card.selected { border-color: #2563eb; background: #eff6ff; }
     .method-card h3 { margin-bottom: 4px; }
@@ -112,12 +116,45 @@ async function api(path, opts = {}) {
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'Request failed');
+  if (!res.ok) {
+    const msg = data.error || 'Request failed';
+    if (typeof showToast === 'function') showToast(msg, true);
+    throw new Error(msg);
+  }
   return data;
 }
 
 const $app = document.getElementById('app');
 function render(html) { $app.innerHTML = html; }
+
+// --- Toast notifications ---
+function showToast(msg, isError) {
+  let el = document.getElementById('toast');
+  if (!el) { el = document.createElement('div'); el.id = 'toast'; el.className = 'toast'; document.body.appendChild(el); }
+  el.textContent = msg;
+  el.className = 'toast show' + (isError ? ' error' : '');
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.className = 'toast'; }, 2500);
+}
+
+// --- Clipboard helper with fallback ---
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.left = '-9999px';
+      document.body.appendChild(ta); ta.select(); document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    showToast('Copied to clipboard');
+    return true;
+  } catch (e) {
+    showToast('Copy failed', true);
+    return false;
+  }
+}
 
 // --- Router ---
 function navigate(hash) { location.hash = hash; }
@@ -236,8 +273,8 @@ async function setupNext2() {
     render('<div class="card"><div class="empty">Fetching data from league website...</div></div>');
     try {
       setup.scraped = await api('/teams/' + setup.teamId + '/scrape', { method: 'POST', body: { year: new Date().getFullYear() } });
-      // Initialize player roles — all default to 'skip'
-      setup.players = setup.scraped.players.map(p => ({ name: p.name, role: 'skip' }));
+      // Initialize player roles — all default to 'core'
+      setup.players = setup.scraped.players.map(p => ({ name: p.name, role: 'core' }));
     } catch (e) {
       alert('Could not fetch data: ' + e.message);
       viewSetup();
@@ -258,12 +295,12 @@ function setupStep3() {
   setup.players.forEach(p => counts[p.role]++);
 
   const playerRows = setup.players.map((p, i) => \`
-    <div class="player-row">
+    <div class="player-row" data-player-idx="\${i}">
       <span style="flex:1;">\${p.name}</span>
       <div class="role-picker">
-        <button class="\${p.role === 'core' ? 'active-core' : ''}" onclick="setRole(\${i},'core')">Core</button>
-        <button class="\${p.role === 'reserve' ? 'active-reserve' : ''}" onclick="setRole(\${i},'reserve')">Res</button>
-        <button class="\${p.role === 'skip' ? 'active-skip' : ''}" onclick="setRole(\${i},'skip')">Skip</button>
+        <button data-role="core" class="\${p.role === 'core' ? 'active-core' : ''}" onclick="setRole(\${i},'core')">Core</button>
+        <button data-role="reserve" class="\${p.role === 'reserve' ? 'active-reserve' : ''}" onclick="setRole(\${i},'reserve')">Res</button>
+        <button data-role="skip" class="\${p.role === 'skip' ? 'active-skip' : ''}" onclick="setRole(\${i},'skip')">Skip</button>
       </div>
     </div>
   \`).join('');
@@ -272,10 +309,14 @@ function setupStep3() {
     <div class="card">
       <h2>Build your squad</h2>
       <p class="text-sm text-muted mb-8">For each player, choose: <strong>Core</strong> (regular squad), <strong>Res</strong> (reserve), or <strong>Skip</strong> (not in your team).</p>
-      <div class="text-sm mb-8">
+      <div class="text-sm mb-8" id="role-counts">
         Core: <strong>\${counts.core}</strong> &middot;
         Reserve: <strong>\${counts.reserve}</strong> &middot;
         Skipped: <strong>\${counts.skip}</strong>
+      </div>
+      <div class="row mb-8">
+        <button class="btn-sm btn-outline" onclick="setAllRoles('core')">All Core</button>
+        <button class="btn-sm btn-outline" onclick="setAllRoles('skip')">All Skip</button>
       </div>
       \${playerRows}
     </div>
@@ -301,6 +342,23 @@ function setupStep3() {
 
 function setRole(idx, role) {
   setup.players[idx].role = role;
+  // Update counts without full re-render to preserve scroll position
+  const counts = { core: 0, reserve: 0, skip: 0 };
+  setup.players.forEach(p => counts[p.role]++);
+  const countsEl = document.getElementById('role-counts');
+  if (countsEl) countsEl.innerHTML = 'Core: <strong>' + counts.core + '</strong> &middot; Reserve: <strong>' + counts.reserve + '</strong> &middot; Skipped: <strong>' + counts.skip + '</strong>';
+  // Update just the buttons for this row
+  const row = document.querySelector('[data-player-idx="' + idx + '"]');
+  if (row) {
+    row.querySelectorAll('.role-picker button').forEach(btn => {
+      const r = btn.dataset.role;
+      btn.className = r === role ? 'active-' + role : '';
+    });
+  }
+}
+
+function setAllRoles(role) {
+  setup.players.forEach((p, i) => { p.role = role; });
   viewSetup();
 }
 
@@ -423,8 +481,9 @@ async function viewDashboard() {
   if (!state.teamId || !state.seasonId) {
     render(\`
       <div class="topbar"><h1>BowlSteam</h1></div>
-      <div class="card empty">
-        <p style="margin-bottom:12px;">Welcome! Let's set up your team.</p>
+      <div class="card" style="text-align:center;">
+        <p style="font-size:1.1rem;font-weight:500;margin-bottom:6px;">Automated team selection for bowls</p>
+        <p class="text-sm text-muted" style="margin-bottom:14px;">Import your fixtures, manage your squad, and let form-based ratings pick the best team each week.</p>
         <button class="btn-primary" onclick="navigate('/setup')">Get Started</button>
       </div>
     \`);
@@ -489,8 +548,8 @@ async function viewDashboard() {
       <div class="flex-between">
         <div class="text-sm text-muted">\${completed.length} of \${fixtures.length} matches played</div>
       </div>
-      <div style="margin-top:6px;background:#e5e7eb;border-radius:4px;height:6px;">
-        <div style="background:#2563eb;border-radius:4px;height:6px;width:\${fixtures.length ? (completed.length/fixtures.length*100) : 0}%;"></div>
+      <div style="margin-top:6px;background:#e5e7eb;border-radius:4px;height:6px;overflow:hidden;">
+        <div style="background:#2563eb;border-radius:4px;height:6px;width:\${fixtures.length ? (completed.length/fixtures.length*100) : 0}%;\${completed.length === 0 ? 'display:none;' : ''}"></div>
       </div>
     </div>
 
@@ -509,7 +568,20 @@ async function viewFixtures() {
   if (!state.seasonId) { navigate('/'); return; }
   const fixtures = await api('/fixtures?season_id=' + state.seasonId);
 
-  const rows = fixtures.map(f => \`
+  // Check which upcoming fixtures have selections
+  const selSets = {};
+  for (const f of fixtures) {
+    if (f.status === 'upcoming') {
+      try {
+        const sel = await api('/fixtures/' + f.id + '/selection');
+        if (sel.length > 0) selSets[f.id] = true;
+      } catch (e) {}
+    }
+  }
+
+  const rows = fixtures.map(f => {
+    const hasSel = selSets[f.id];
+    return \`
     <div class="card fixture-card" onclick="navigate('/fixture/\${f.id}')">
       <div class="flex-between">
         <div>
@@ -518,11 +590,12 @@ async function viewFixtures() {
         </div>
         <div style="display:flex;gap:4px;">
           <span class="badge badge-\${f.venue.toLowerCase()}">\${f.venue}</span>
+          \${f.status === 'upcoming' && hasSel ? '<span class="badge badge-ready">selected</span>' : ''}
           <span class="badge badge-\${f.status}">\${f.status}</span>
         </div>
       </div>
     </div>
-  \`).join('');
+  \`;}).join('');
 
   render(\`
     <a class="back" onclick="navigate('/')">&larr; Home</a>
@@ -613,14 +686,31 @@ async function viewFixture(fixtureId) {
         </div>
       \`;
     }).join('');
+    const editRows = fixture.results.map(r => \`
+      <div class="score-row">
+        <span class="name">\${r.name}</span>
+        <input type="number" min="0" max="\${config.max_score}" data-result-player="\${r.player_id}" data-field="player_score" value="\${r.player_score}">
+        <span class="vs">-</span>
+        <input type="number" min="0" max="\${config.max_score}" data-result-player="\${r.player_id}" data-field="opponent_score" value="\${r.opponent_score}">
+      </div>
+    \`).join('');
     const totalFor = fixture.results.reduce((s, r) => s + r.player_score, 0);
     const totalAgainst = fixture.results.reduce((s, r) => s + r.opponent_score, 0);
     resultsHtml = \`
       <div class="card">
-        <h3>Results</h3>
-        \${resRows}
-        <div style="margin-top:8px;font-weight:600;text-align:center;">
-          Total: \${totalFor} &ndash; \${totalAgainst}
+        <div class="flex-between mb-8">
+          <h3>Results</h3>
+          <button class="btn-sm btn-outline" onclick="toggleEditResults(\${fixtureId})">Edit</button>
+        </div>
+        <div id="results-view">
+          \${resRows}
+          <div style="margin-top:8px;font-weight:600;text-align:center;">
+            Total: \${totalFor} &ndash; \${totalAgainst}
+          </div>
+        </div>
+        <div id="results-edit" style="display:none;">
+          \${editRows}
+          <button class="btn-success mt-12" onclick="submitResults(\${fixtureId})">Save Results</button>
         </div>
       </div>
     \`;
@@ -761,7 +851,7 @@ async function viewPlayer(playerId) {
         <div class="mt-8">
           <span style="font-size:1.3rem;font-weight:700;">\${rating.rating.toFixed(1)}</span>
           <span class="text-sm text-muted"> avg</span>
-          <span class="text-sm text-muted" style="margin-left:12px;">\${rating.games_played} games</span>
+          <span class="text-sm text-muted" style="margin-left:12px;">\${rating.games_played} \${rating.games_played === 1 ? 'game' : 'games'}</span>
         </div>
         \${rating.recent_scores.length ? \`<div class="text-sm text-muted mt-8">Recent: \${rating.recent_scores.join(', ')}</div>\` : ''}
       \` : ''}
@@ -958,11 +1048,23 @@ async function submitResults(fixtureId) {
   viewFixture(fixtureId);
 }
 
+function toggleEditResults(fixtureId) {
+  const view = document.getElementById('results-view');
+  const edit = document.getElementById('results-edit');
+  if (view && edit) {
+    const showing = edit.style.display !== 'none';
+    view.style.display = showing ? '' : 'none';
+    edit.style.display = showing ? 'none' : '';
+  }
+}
+
 async function addPlayer() {
-  const name = document.getElementById('new-player-name').value.trim();
+  const inp = document.getElementById('new-player-name');
+  const name = inp.value.trim();
   if (!name) return;
   const role = document.getElementById('new-player-role').value;
   await api('/players', { method: 'POST', body: { team_id: state.teamId, name, is_reserve: role === 'reserve' } });
+  inp.value = '';
   viewSquad();
 }
 
@@ -1007,7 +1109,7 @@ async function saveConfig(seasonId) {
     if (el) body[f] = el.checked ? 1 : 0;
   }
   await api('/seasons/' + seasonId + '/config', { method: 'PUT', body });
-  alert('Settings saved');
+  showToast('Settings saved');
 }
 
 // --- Copy to clipboard ---
@@ -1038,9 +1140,7 @@ async function copySelection(fixtureId) {
     });
   }
 
-  await navigator.clipboard.writeText(text);
-  const btn = document.querySelector('.copy-btn');
-  if (btn) { btn.textContent = 'Copied!'; btn.classList.add('copied'); setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 2000); }
+  await copyText(text);
 }
 
 async function copyRatings() {
@@ -1055,9 +1155,7 @@ async function copyRatings() {
     text += num + ' ' + name + avg + '  ' + recent + '\\n';
   });
 
-  await navigator.clipboard.writeText(text);
-  const btn = document.querySelector('.copy-btn');
-  if (btn) { btn.textContent = 'Copied!'; btn.classList.add('copied'); setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 2000); }
+  await copyText(text);
 }
 
 // --- Helpers ---
