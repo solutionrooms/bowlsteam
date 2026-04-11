@@ -103,20 +103,23 @@ export function renderHtml() {
   <script>
 
 // --- State ---
-let state = { teamId: null, seasonId: null, teams: [], seasons: [] };
+let state = { pin: null, clubId: null, clubName: null, teamId: null, seasonId: null, teams: [], seasons: [] };
 
 // Setup wizard state
 let setup = { step: 1, teamId: null, leagueName: '', teamName: '', url: '', scraped: null, players: [], method: 'form_based' };
 
 // --- API helpers ---
 async function api(path, opts = {}) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (state.pin) headers['X-Club-Pin'] = state.pin;
   const res = await fetch('/api' + path, {
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     ...opts,
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   const data = await res.json();
   if (!res.ok) {
+    if (res.status === 401 && path !== '/auth') { logout(); return; }
     const msg = data.error || 'Request failed';
     if (typeof showToast === 'function') showToast(msg, true);
     throw new Error(msg);
@@ -161,9 +164,35 @@ function navigate(hash) { location.hash = hash; }
 
 window.addEventListener('hashchange', route);
 window.addEventListener('load', async () => {
-  await loadState();
-  route();
+  // Check for saved PIN
+  const savedPin = localStorage.getItem('bowlsteam_pin');
+  if (savedPin) {
+    try {
+      const auth = await fetch('/api/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin: savedPin }),
+      }).then(r => r.json());
+      if (auth.id) {
+        state.pin = savedPin;
+        state.clubId = auth.id;
+        state.clubName = auth.name;
+        if (auth.needsName) { viewSetClubName(); return; }
+        await loadState();
+        route();
+        return;
+      }
+    } catch (e) {}
+    localStorage.removeItem('bowlsteam_pin');
+  }
+  viewLogin();
 });
+
+function logout() {
+  localStorage.removeItem('bowlsteam_pin');
+  state = { pin: null, clubId: null, clubName: null, teamId: null, seasonId: null, teams: [], seasons: [] };
+  viewLogin();
+}
 
 async function loadState() {
   state.teams = await api('/teams');
@@ -172,6 +201,74 @@ async function loadState() {
     state.seasons = await api('/seasons?team_id=' + state.teamId);
     const current = state.seasons.find(s => s.is_current);
     if (current) state.seasonId = current.id;
+  }
+}
+
+// --- Login Screen ---
+function viewLogin() {
+  render(\`
+    <div class="topbar"><h1>BowlSteam</h1></div>
+    <div class="card" style="text-align:center;">
+      <p style="font-size:1.1rem;font-weight:500;margin-bottom:6px;">Automated team selection for bowls</p>
+      <p class="text-sm text-muted mb-12">Enter your club PIN to get started.</p>
+      <input type="text" id="pin-input" placeholder="Enter PIN" maxlength="10" style="text-align:center;font-size:1.3rem;letter-spacing:4px;">
+      <button class="btn-primary mt-8" onclick="doLogin()">Enter</button>
+    </div>
+  \`);
+  document.getElementById('pin-input').focus();
+  document.getElementById('pin-input').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+}
+
+async function doLogin() {
+  const pin = document.getElementById('pin-input').value.trim();
+  if (!pin) return;
+  try {
+    const auth = await fetch('/api/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pin }),
+    }).then(r => r.json());
+    if (auth.error) { showToast(auth.error, true); return; }
+    state.pin = pin;
+    state.clubId = auth.id;
+    state.clubName = auth.name;
+    localStorage.setItem('bowlsteam_pin', pin);
+    if (auth.needsName) { viewSetClubName(); return; }
+    await loadState();
+    route();
+  } catch (e) {
+    showToast('Invalid PIN', true);
+  }
+}
+
+function viewSetClubName() {
+  render(\`
+    <div class="topbar"><h1>BowlSteam</h1></div>
+    <div class="card">
+      <h2>Welcome! Name your club</h2>
+      <p class="text-sm text-muted mb-8">This is the first time this PIN has been used. Enter your club or bowling green name.</p>
+      <input type="text" id="club-name-input" placeholder="e.g. Westlands Bowling Club">
+      <button class="btn-success mt-8" onclick="doSetClubName()">Continue</button>
+    </div>
+  \`);
+  document.getElementById('club-name-input').focus();
+}
+
+async function doSetClubName() {
+  const name = document.getElementById('club-name-input').value.trim();
+  if (!name) return;
+  try {
+    await fetch('/api/auth/set-name', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pin: state.pin, name }),
+    });
+    state.clubName = name;
+    await loadState();
+    navigate('/');
+    route();
+  } catch (e) {
+    showToast('Failed to set name', true);
   }
 }
 
@@ -539,9 +636,12 @@ async function viewDashboard() {
     <div class="topbar">
       <div>
         <h1>\${team ? team.name : 'BowlSteam'}</h1>
-        <div class="text-sm text-muted">\${season ? season.division + ' &middot; ' + season.year : ''}</div>
+        <div class="text-sm text-muted">\${state.clubName ? state.clubName + ' &middot; ' : ''}\${season ? season.division + ' &middot; ' + season.year : ''}</div>
       </div>
-      <a onclick="navigate('/season')" class="text-sm">Manage</a>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <a onclick="navigate('/season')" class="text-sm">Manage</a>
+        <a onclick="logout()" class="text-sm" style="color:#999;">Logout</a>
+      </div>
     </div>
 
     <div class="card">

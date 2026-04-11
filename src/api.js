@@ -1,6 +1,13 @@
 import { getAllRatings, runSelection, determineDroppedPlayer } from './selection.js';
 import { scrapeAll, scrapeFixtures } from './scraper.js';
 
+// --- Auth helper: resolve club from PIN header ---
+async function getClub(request, db) {
+  const pin = request.headers.get('X-Club-Pin');
+  if (!pin) return null;
+  return db.prepare('SELECT * FROM clubs WHERE pin = ?').bind(pin).first();
+}
+
 export async function handleApi(request, env) {
   const url = new URL(request.url);
   const path = url.pathname.replace(/\/+$/, '');
@@ -9,9 +16,61 @@ export async function handleApi(request, env) {
 
   try {
 
-    // --- Teams ---
+    // === PUBLIC: Auth endpoints (no PIN required) ===
+
+    // Validate PIN and return club info
+    if (path === '/api/auth' && method === 'POST') {
+      const body = await request.json();
+      const { pin } = body;
+      if (!pin) return error('PIN required', 400);
+      const club = await db.prepare('SELECT id, pin, name FROM clubs WHERE pin = ?').bind(pin).first();
+      if (!club) return error('Invalid PIN', 401);
+      return json({ id: club.id, name: club.name, needsName: !club.name });
+    }
+
+    // Set club name (first login)
+    if (path === '/api/auth/set-name' && method === 'POST') {
+      const body = await request.json();
+      const { pin, name } = body;
+      if (!pin || !name) return error('PIN and name required', 400);
+      const club = await db.prepare('SELECT id, name FROM clubs WHERE pin = ?').bind(pin).first();
+      if (!club) return error('Invalid PIN', 401);
+      if (club.name) return error('Club name already set', 400);
+      await db.prepare('UPDATE clubs SET name = ? WHERE id = ?').bind(name, club.id).run();
+      return json({ id: club.id, name });
+    }
+
+    // === ADMIN: PIN management (protected by admin key) ===
+
+    if (path === '/api/admin/pins') {
+      const adminKey = env.ADMIN_KEY || 'bowlsteam-admin';
+      const authHeader = request.headers.get('Authorization');
+      if (authHeader !== 'Bearer ' + adminKey) return error('Unauthorized', 401);
+
+      if (method === 'GET') {
+        const rows = await db.prepare('SELECT id, pin, name, created_at FROM clubs ORDER BY id').all();
+        return json(rows.results);
+      }
+
+      if (method === 'POST') {
+        const body = await request.json();
+        const pin = body.pin || generatePin();
+        const existing = await db.prepare('SELECT id FROM clubs WHERE pin = ?').bind(pin).first();
+        if (existing) return error('PIN already exists', 409);
+        const res = await db.prepare('INSERT INTO clubs (pin) VALUES (?)').bind(pin).run();
+        return json({ id: res.meta.last_row_id, pin }, 201);
+      }
+    }
+
+    // === ALL OTHER ROUTES: require valid PIN ===
+
+    const club = await getClub(request, db);
+    if (!club) return error('PIN required', 401);
+    const clubId = club.id;
+
+    // --- Teams (scoped to club) ---
     if (path === '/api/teams' && method === 'GET') {
-      const rows = await db.prepare('SELECT * FROM teams ORDER BY id DESC').all();
+      const rows = await db.prepare('SELECT * FROM teams WHERE club_id = ? ORDER BY id DESC').bind(clubId).all();
       return json(rows.results);
     }
 
@@ -20,14 +79,17 @@ export async function handleApi(request, env) {
       const { name, league_name, website_url } = body;
       if (!name || !league_name) return error('name and league_name required', 400);
       const res = await db.prepare(
-        'INSERT INTO teams (name, league_name, website_url) VALUES (?, ?, ?)'
-      ).bind(name, league_name, website_url || null).run();
+        'INSERT INTO teams (club_id, name, league_name, website_url) VALUES (?, ?, ?, ?)'
+      ).bind(clubId, name, league_name, website_url || null).run();
       return json({ id: res.meta.last_row_id }, 201);
     }
 
     const teamMatch = path.match(/^\/api\/teams\/(\d+)$/);
     if (teamMatch && method === 'PUT') {
       const teamId = parseInt(teamMatch[1]);
+      // Verify team belongs to club
+      const team = await db.prepare('SELECT id FROM teams WHERE id = ? AND club_id = ?').bind(teamId, clubId).first();
+      if (!team) return error('Team not found', 404);
       const body = await request.json();
       const sets = [];
       const vals = [];
@@ -41,11 +103,11 @@ export async function handleApi(request, env) {
       return json(updated);
     }
 
-    // --- Scrape team page (fixtures + roster + division) ---
+    // --- Scrape team page ---
     const scrapeMatch = path.match(/^\/api\/teams\/(\d+)\/scrape$/);
     if (scrapeMatch && method === 'POST') {
       const teamId = parseInt(scrapeMatch[1]);
-      const team = await db.prepare('SELECT * FROM teams WHERE id = ?').bind(teamId).first();
+      const team = await db.prepare('SELECT * FROM teams WHERE id = ? AND club_id = ?').bind(teamId, clubId).first();
       if (!team) return error('Team not found', 404);
       if (!team.website_url) return error('No website URL configured for this team', 400);
 
@@ -56,37 +118,33 @@ export async function handleApi(request, env) {
       return json(data);
     }
 
-    // --- Setup: create season + import fixtures + import players in one go ---
+    // --- Setup: create season + import fixtures + import players ---
     const setupMatch = path.match(/^\/api\/teams\/(\d+)\/setup$/);
     if (setupMatch && method === 'POST') {
       const teamId = parseInt(setupMatch[1]);
-      const team = await db.prepare('SELECT * FROM teams WHERE id = ?').bind(teamId).first();
+      const team = await db.prepare('SELECT * FROM teams WHERE id = ? AND club_id = ?').bind(teamId, clubId).first();
       if (!team) return error('Team not found', 404);
 
       const body = await request.json();
       const { year, division, selection_method, players, fixtures } = body;
       if (!year || !division) return error('year and division required', 400);
 
-      // Create season
       const seasonRes = await db.prepare(
         'INSERT INTO seasons (team_id, year, division, is_current, selection_method) VALUES (?, ?, ?, 1, ?)'
       ).bind(teamId, year, division, selection_method || 'form_based').run();
       const seasonId = seasonRes.meta.last_row_id;
 
-      // Unset other seasons as current
       await db.prepare(
         'UPDATE seasons SET is_current = 0 WHERE id != ? AND team_id = ?'
       ).bind(seasonId, teamId).run();
 
-      // Create default config
       await db.prepare(
         'INSERT INTO season_config (season_id) VALUES (?)'
       ).bind(seasonId).run();
 
-      // Import players
       if (players && players.length > 0) {
         for (const p of players) {
-          if (p.role === 'skip') continue; // not in team
+          if (p.role === 'skip') continue;
           await db.prepare(`
             INSERT INTO players (team_id, name, is_reserve, is_active)
             VALUES (?, ?, ?, 1)
@@ -95,7 +153,6 @@ export async function handleApi(request, env) {
         }
       }
 
-      // Import fixtures
       if (fixtures && fixtures.length > 0) {
         for (let i = 0; i < fixtures.length; i++) {
           const f = fixtures[i];
@@ -112,13 +169,14 @@ export async function handleApi(request, env) {
       return json({ season_id: seasonId }, 201);
     }
 
-    // --- Seasons ---
+    // --- Seasons (scoped via team → club) ---
     if (path === '/api/seasons' && method === 'GET') {
       const teamId = url.searchParams.get('team_id');
-      let query = 'SELECT s.*, t.name as team_name, t.league_name FROM seasons s JOIN teams t ON s.team_id = t.id';
-      const params = [];
+      let query = `SELECT s.*, t.name as team_name, t.league_name FROM seasons s
+        JOIN teams t ON s.team_id = t.id WHERE t.club_id = ?`;
+      const params = [clubId];
       if (teamId) {
-        query += ' WHERE s.team_id = ?';
+        query += ' AND s.team_id = ?';
         params.push(parseInt(teamId));
       }
       query += ' ORDER BY s.year DESC';
@@ -130,6 +188,9 @@ export async function handleApi(request, env) {
       const body = await request.json();
       const { team_id, year, division, selection_method } = body;
       if (!team_id || !year || !division) return error('team_id, year and division required', 400);
+      // Verify team belongs to club
+      const team = await db.prepare('SELECT id FROM teams WHERE id = ? AND club_id = ?').bind(team_id, clubId).first();
+      if (!team) return error('Team not found', 404);
 
       const res = await db.prepare(
         'INSERT INTO seasons (team_id, year, division, is_current, selection_method) VALUES (?, ?, ?, 1, ?)'
@@ -150,7 +211,9 @@ export async function handleApi(request, env) {
     const currentMatch = path.match(/^\/api\/seasons\/(\d+)\/set-current$/);
     if (currentMatch && method === 'POST') {
       const seasonId = parseInt(currentMatch[1]);
-      const season = await db.prepare('SELECT team_id FROM seasons WHERE id = ?').bind(seasonId).first();
+      const season = await db.prepare(
+        'SELECT s.team_id FROM seasons s JOIN teams t ON s.team_id = t.id WHERE s.id = ? AND t.club_id = ?'
+      ).bind(seasonId, clubId).first();
       if (!season) return error('Season not found', 404);
       await db.prepare('UPDATE seasons SET is_current = 0 WHERE team_id = ?').bind(season.team_id).run();
       await db.prepare('UPDATE seasons SET is_current = 1 WHERE id = ?').bind(seasonId).run();
@@ -161,6 +224,11 @@ export async function handleApi(request, env) {
     const configMatch = path.match(/^\/api\/seasons\/(\d+)\/config$/);
     if (configMatch) {
       const seasonId = parseInt(configMatch[1]);
+      // Verify ownership
+      const owns = await db.prepare(
+        'SELECT s.id FROM seasons s JOIN teams t ON s.team_id = t.id WHERE s.id = ? AND t.club_id = ?'
+      ).bind(seasonId, clubId).first();
+      if (!owns) return error('Season not found', 404);
 
       if (method === 'GET') {
         const config = await db.prepare(
@@ -195,11 +263,13 @@ export async function handleApi(request, env) {
       }
     }
 
-    // --- Fixture Import (manual sync) ---
+    // --- Fixture Import ---
     const importMatch = path.match(/^\/api\/seasons\/(\d+)\/import-fixtures$/);
     if (importMatch && method === 'POST') {
       const seasonId = parseInt(importMatch[1]);
-      const season = await db.prepare('SELECT s.*, t.website_url FROM seasons s JOIN teams t ON s.team_id = t.id WHERE s.id = ?').bind(seasonId).first();
+      const season = await db.prepare(
+        'SELECT s.*, t.website_url FROM seasons s JOIN teams t ON s.team_id = t.id WHERE s.id = ? AND t.club_id = ?'
+      ).bind(seasonId, clubId).first();
       if (!season) return error('Season not found', 404);
       if (!season.website_url) return error('No website URL on team', 400);
 
@@ -241,14 +311,15 @@ export async function handleApi(request, env) {
     // --- Fixtures ---
     if (path === '/api/fixtures' && method === 'GET') {
       const seasonId = url.searchParams.get('season_id');
-      let query = 'SELECT * FROM fixtures';
-      const params = [];
-      if (seasonId) {
-        query += ' WHERE season_id = ?';
-        params.push(parseInt(seasonId));
-      }
-      query += ' ORDER BY week_number ASC';
-      const rows = await db.prepare(query).bind(...params).all();
+      if (!seasonId) return error('season_id required', 400);
+      // Verify ownership
+      const owns = await db.prepare(
+        'SELECT s.id FROM seasons s JOIN teams t ON s.team_id = t.id WHERE s.id = ? AND t.club_id = ?'
+      ).bind(parseInt(seasonId), clubId).first();
+      if (!owns) return json([]);
+      const rows = await db.prepare(
+        'SELECT * FROM fixtures WHERE season_id = ? ORDER BY week_number ASC'
+      ).bind(parseInt(seasonId)).all();
       return json(rows.results);
     }
 
@@ -260,7 +331,11 @@ export async function handleApi(request, env) {
         const fixture = await db.prepare('SELECT * FROM fixtures WHERE id = ?').bind(fixtureId).first();
         if (!fixture) return error('Fixture not found', 404);
 
-        const season = await db.prepare('SELECT team_id FROM seasons WHERE id = ?').bind(fixture.season_id).first();
+        // Verify ownership
+        const season = await db.prepare(
+          'SELECT s.team_id FROM seasons s JOIN teams t ON s.team_id = t.id WHERE s.id = ? AND t.club_id = ?'
+        ).bind(fixture.season_id, clubId).first();
+        if (!season) return error('Fixture not found', 404);
 
         const avail = await db.prepare(
           'SELECT a.*, p.name FROM availability a JOIN players p ON a.player_id = p.id WHERE a.fixture_id = ?'
@@ -297,20 +372,22 @@ export async function handleApi(request, env) {
     // --- Players ---
     if (path === '/api/players' && method === 'GET') {
       const teamId = url.searchParams.get('team_id');
-      let query = 'SELECT * FROM players WHERE is_active = 1';
-      const params = [];
-      if (teamId) {
-        query += ' AND team_id = ?';
-        params.push(parseInt(teamId));
-      }
-      query += ' ORDER BY is_reserve ASC, name ASC';
-      const rows = await db.prepare(query).bind(...params).all();
+      if (!teamId) return error('team_id required', 400);
+      // Verify team belongs to club
+      const team = await db.prepare('SELECT id FROM teams WHERE id = ? AND club_id = ?').bind(parseInt(teamId), clubId).first();
+      if (!team) return json([]);
+      const rows = await db.prepare(
+        'SELECT * FROM players WHERE is_active = 1 AND team_id = ? ORDER BY is_reserve ASC, name ASC'
+      ).bind(parseInt(teamId)).all();
       return json(rows.results);
     }
 
     if (path === '/api/players' && method === 'POST') {
       const body = await request.json();
       if (!body.name || !body.team_id) return error('name and team_id required', 400);
+      // Verify team belongs to club
+      const team = await db.prepare('SELECT id FROM teams WHERE id = ? AND club_id = ?').bind(body.team_id, clubId).first();
+      if (!team) return error('Team not found', 404);
       const isReserve = body.is_reserve ? 1 : 0;
       const res = await db.prepare(
         'INSERT INTO players (team_id, name, is_reserve) VALUES (?, ?, ?)'
@@ -377,10 +454,8 @@ export async function handleApi(request, env) {
 
       const result = await runSelection(db, fixtureId, fixture.season_id, config);
 
-      // Clear previous selections for this fixture
       await db.prepare('DELETE FROM selections WHERE fixture_id = ?').bind(fixtureId).run();
 
-      // Store selections
       for (const p of result.selected) {
         await db.prepare(`
           INSERT INTO selections (fixture_id, player_id, is_selected, is_dropped, rating_at_selection)
@@ -466,23 +541,14 @@ export async function handleApi(request, env) {
       }
     }
 
-    const resultUpdateMatch = path.match(/^\/api\/fixtures\/(\d+)\/results\/(\d+)$/);
-    if (resultUpdateMatch && method === 'PUT') {
-      const resultId = parseInt(resultUpdateMatch[2]);
-      const body = await request.json();
-      await db.prepare(
-        'UPDATE results SET player_score = ?, opponent_score = ? WHERE id = ?'
-      ).bind(body.player_score, body.opponent_score, resultId).run();
-      const updated = await db.prepare('SELECT * FROM results WHERE id = ?').bind(resultId).first();
-      return json(updated);
-    }
-
     // --- Ratings ---
     if (path === '/api/ratings' && method === 'GET') {
       const seasonId = url.searchParams.get('season_id');
       let sid = seasonId ? parseInt(seasonId) : null;
       if (!sid) {
-        const current = await db.prepare('SELECT id FROM seasons WHERE is_current = 1').first();
+        const current = await db.prepare(
+          'SELECT s.id FROM seasons s JOIN teams t ON s.team_id = t.id WHERE s.is_current = 1 AND t.club_id = ?'
+        ).bind(clubId).first();
         if (!current) return json([]);
         sid = current.id;
       }
@@ -524,6 +590,10 @@ export async function handleApi(request, env) {
     console.error(e);
     return error(e.message || 'Internal error', 500);
   }
+}
+
+function generatePin() {
+  return String(Math.floor(1000 + Math.random() * 9000));
 }
 
 function json(data, status = 200) {

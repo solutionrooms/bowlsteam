@@ -1,7 +1,15 @@
 -- BowlSteam schema
 
+CREATE TABLE IF NOT EXISTS clubs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pin TEXT NOT NULL UNIQUE,
+    name TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS teams (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    club_id INTEGER NOT NULL REFERENCES clubs(id),
     name TEXT NOT NULL,
     league_name TEXT NOT NULL,
     website_url TEXT
@@ -88,3 +96,5 @@ CREATE INDEX IF NOT EXISTS idx_availability_fixture ON availability(fixture_id);
 CREATE INDEX IF NOT EXISTS idx_selections_fixture ON selections(fixture_id);
 CREATE INDEX IF NOT EXISTS idx_players_team ON players(team_id);
 CREATE INDEX IF NOT EXISTS idx_seasons_team ON seasons(team_id);
+CREATE INDEX IF NOT EXISTS idx_teams_club ON teams(club_id);
+CREATE INDEX IF NOT EXISTS idx_clubs_pin ON clubs(pin);
