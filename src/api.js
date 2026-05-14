@@ -104,9 +104,9 @@ export async function handleApi(request, env) {
     }
 
     // --- Scrape team page ---
-    const scrapeMatch = path.match(/^\/api\/teams\/(\d+)\/scrape$/);
-    if (scrapeMatch && method === 'POST') {
-      const teamId = parseInt(scrapeMatch[1]);
+    const scrapePathMatch = path.match(/^\/api\/teams\/(\d+)\/scrape$/);
+    if (scrapePathMatch && method === 'POST') {
+      const teamId = parseInt(scrapePathMatch[1]);
       const team = await db.prepare('SELECT * FROM teams WHERE id = ? AND club_id = ?').bind(teamId, clubId).first();
       if (!team) return error('Team not found', 404);
       if (!team.website_url) return error('No website URL configured for this team', 400);
