@@ -3,6 +3,7 @@
 CREATE TABLE IF NOT EXISTS clubs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     pin TEXT NOT NULL UNIQUE,
+    player_pin TEXT,
     name TEXT,
     created_at TEXT DEFAULT (datetime('now'))
 );

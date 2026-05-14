@@ -1,11 +1,17 @@
 import { getAllRatings, runSelection, determineDroppedPlayer } from './selection.js';
 import { scrapeAll, scrapeFixtures, scrapeMatch } from './scraper.js';
 
-// --- Auth helper: resolve club from PIN header ---
+// --- Auth helper: resolve club + role from PIN header ---
 async function getClub(request, db) {
   const pin = request.headers.get('X-Club-Pin');
   if (!pin) return null;
-  return db.prepare('SELECT * FROM clubs WHERE pin = ?').bind(pin).first();
+  // Try captain PIN first (globally unique)
+  let club = await db.prepare('SELECT * FROM clubs WHERE pin = ?').bind(pin).first();
+  if (club) return { ...club, role: 'captain' };
+  // Then try player PIN (could be same value across clubs in theory, but each club has its own)
+  club = await db.prepare('SELECT * FROM clubs WHERE player_pin = ?').bind(pin).first();
+  if (club) return { ...club, role: 'player' };
+  return null;
 }
 
 export async function handleApi(request, env) {
@@ -18,14 +24,19 @@ export async function handleApi(request, env) {
 
     // === PUBLIC: Auth endpoints (no PIN required) ===
 
-    // Validate PIN and return club info
+    // Validate PIN and return club info + role
     if (path === '/api/auth' && method === 'POST') {
       const body = await request.json();
       const { pin } = body;
       if (!pin) return error('PIN required', 400);
-      const club = await db.prepare('SELECT id, pin, name FROM clubs WHERE pin = ?').bind(pin).first();
+      let club = await db.prepare('SELECT id, name FROM clubs WHERE pin = ?').bind(pin).first();
+      let role = 'captain';
+      if (!club) {
+        club = await db.prepare('SELECT id, name FROM clubs WHERE player_pin = ?').bind(pin).first();
+        role = 'player';
+      }
       if (!club) return error('Invalid PIN', 401);
-      return json({ id: club.id, name: club.name, needsName: !club.name });
+      return json({ id: club.id, name: club.name, needsName: !club.name, role });
     }
 
     // Set club name (first login)
@@ -67,6 +78,29 @@ export async function handleApi(request, env) {
     const club = await getClub(request, db);
     if (!club) return error('PIN required', 401);
     const clubId = club.id;
+
+    // Players are read-only — block all non-GET methods.
+    if (club.role === 'player' && method !== 'GET') {
+      return error('Read-only access (player PIN)', 403);
+    }
+
+    // --- Club info (rename, set player pin) ---
+    if (path === '/api/club' && method === 'GET') {
+      return json({ id: club.id, name: club.name, player_pin: club.player_pin || null });
+    }
+
+    if (path === '/api/club' && method === 'PUT') {
+      const body = await request.json();
+      const sets = [];
+      const vals = [];
+      if (body.name !== undefined) { sets.push('name = ?'); vals.push(body.name); }
+      if (body.player_pin !== undefined) { sets.push('player_pin = ?'); vals.push(body.player_pin || null); }
+      if (sets.length === 0) return error('No valid fields', 400);
+      vals.push(clubId);
+      await db.prepare(`UPDATE clubs SET ${sets.join(', ')} WHERE id = ?`).bind(...vals).run();
+      const updated = await db.prepare('SELECT id, name, player_pin FROM clubs WHERE id = ?').bind(clubId).first();
+      return json(updated);
+    }
 
     // --- Teams (scoped to club) ---
     if (path === '/api/teams' && method === 'GET') {

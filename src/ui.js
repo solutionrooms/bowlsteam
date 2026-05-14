@@ -103,7 +103,9 @@ export function renderHtml() {
   <script>
 
 // --- State ---
-let state = { pin: null, clubId: null, clubName: null, teamId: null, seasonId: null, teams: [], seasons: [] };
+let state = { pin: null, role: null, clubId: null, clubName: null, teamId: null, seasonId: null, teams: [], seasons: [] };
+
+function isCaptain() { return state.role === 'captain'; }
 
 // Setup wizard state
 let setup = { step: 1, teamId: null, leagueName: '', teamName: '', url: '', scraped: null, players: [], method: 'form_based' };
@@ -175,9 +177,10 @@ window.addEventListener('load', async () => {
       }).then(r => r.json());
       if (auth.id) {
         state.pin = savedPin;
+        state.role = auth.role || 'captain';
         state.clubId = auth.id;
         state.clubName = auth.name;
-        if (auth.needsName) { viewSetClubName(); return; }
+        if (auth.needsName && isCaptain()) { viewSetClubName(); return; }
         await loadState();
         route();
         return;
@@ -230,10 +233,11 @@ async function doLogin() {
     }).then(r => r.json());
     if (auth.error) { showToast(auth.error, true); return; }
     state.pin = pin;
+    state.role = auth.role || 'captain';
     state.clubId = auth.id;
     state.clubName = auth.name;
     localStorage.setItem('bowlsteam_pin', pin);
-    if (auth.needsName) { viewSetClubName(); return; }
+    if (auth.needsName && isCaptain()) { viewSetClubName(); return; }
     await loadState();
     route();
   } catch (e) {
@@ -636,10 +640,10 @@ async function viewDashboard() {
     <div class="topbar">
       <div>
         <h1>\${team ? team.name : 'BowlSteam'}</h1>
-        <div class="text-sm text-muted">\${state.clubName ? state.clubName + ' &middot; ' : ''}\${season ? season.division + ' &middot; ' + season.year : ''}</div>
+        <div class="text-sm text-muted">\${state.clubName ? state.clubName + ' &middot; ' : ''}\${season ? season.division + ' &middot; ' + season.year : ''}\${isCaptain() ? '' : ' &middot; <span style="color:#7c3aed;">view-only</span>'}</div>
       </div>
       <div style="display:flex;gap:8px;align-items:center;">
-        <a onclick="navigate('/season')" class="text-sm">Manage</a>
+        \${isCaptain() ? '<a onclick="navigate(\\'/season\\')" class="text-sm">Manage</a>' : ''}
         <a onclick="logout()" class="text-sm" style="color:#999;">Logout</a>
       </div>
     </div>
@@ -728,7 +732,7 @@ async function viewFixture(fixtureId) {
           \${p.is_reserve ? '<span class="badge badge-reserve" style="margin-left:6px;">R</span>' : ''}
         </div>
         <label class="toggle">
-          <input type="checkbox" data-player-id="\${p.id}" \${checked ? 'checked' : ''}>
+          <input type="checkbox" data-player-id="\${p.id}" \${checked ? 'checked' : ''} \${isCaptain() ? '' : 'disabled'}>
           <span class="slider"></span>
         </label>
       </div>
@@ -813,7 +817,7 @@ async function viewFixture(fixtureId) {
       <div class="card">
         <div class="flex-between mb-8">
           <h3>Results</h3>
-          <button class="btn-sm btn-outline" onclick="toggleEditResults(\${fixtureId})">Edit</button>
+          \${isCaptain() ? \`<button class="btn-sm btn-outline" onclick="toggleEditResults(\${fixtureId})">Edit</button>\` : ''}
         </div>
         <div id="results-view">
           \${resRows}
@@ -831,7 +835,7 @@ async function viewFixture(fixtureId) {
 
   // Score entry
   let scoreEntryHtml = '';
-  if (hasSelection && !hasResults && fixture.status === 'upcoming') {
+  if (isCaptain() && hasSelection && !hasResults && fixture.status === 'upcoming') {
     const selected = fixture.selections.filter(s => s.is_selected);
     const entryRows = selected.map(s => \`
       <div class="score-row" data-row-player="\${s.player_id}">
@@ -871,15 +875,15 @@ async function viewFixture(fixtureId) {
     <div class="card">
       <div class="flex-between mb-8">
         <h3>Availability</h3>
-        <button class="btn-sm btn-primary" onclick="saveAvailability(\${fixtureId})">Save</button>
+        \${isCaptain() ? \`<button class="btn-sm btn-primary" onclick="saveAvailability(\${fixtureId})">Save</button>\` : ''}
       </div>
       \${availRows}
     </div>
 
-    \${!hasSelection && fixture.status === 'upcoming' ? \`
+    \${isCaptain() && !hasSelection && fixture.status === 'upcoming' ? \`
       <button class="btn-primary mb-12" onclick="doRunSelection(\${fixtureId})">Run Selection</button>
     \` : ''}
-    \${hasSelection && fixture.status === 'upcoming' ? \`
+    \${isCaptain() && hasSelection && fixture.status === 'upcoming' ? \`
       <button class="btn-outline btn-sm mb-12" style="width:100%;" onclick="doRunSelection(\${fixtureId})">Re-run Selection</button>
     \` : ''}
 
@@ -980,10 +984,10 @@ async function viewSquad() {
   const makeRow = (p) => \`
     <div class="player-row">
       <span>\${p.name}</span>
-      <div style="display:flex;gap:4px;">
+      \${isCaptain() ? \`<div style="display:flex;gap:4px;">
         <button class="btn-sm btn-outline" onclick="toggleReserve(\${p.id}, \${p.is_reserve ? 0 : 1})">\${p.is_reserve ? 'Make Core' : 'Make Res'}</button>
         <button class="btn-sm btn-danger" onclick="deactivatePlayer(\${p.id})">Remove</button>
-      </div>
+      </div>\` : ''}
     </div>
   \`;
 
@@ -991,7 +995,7 @@ async function viewSquad() {
     <a class="back" onclick="navigate('/')">&larr; Home</a>
     <h1>Squad</h1>
 
-    <div class="card">
+    \${isCaptain() ? \`<div class="card">
       <h3>Add Player</h3>
       <div class="row">
         <input type="text" id="new-player-name" placeholder="Player name" style="margin-bottom:0;">
@@ -1001,7 +1005,7 @@ async function viewSquad() {
         </select>
         <button class="btn-sm btn-primary" style="flex:none;" onclick="addPlayer()">Add</button>
       </div>
-    </div>
+    </div>\` : ''}
 
     <div class="card">
       <h3>Core (\${regulars.length})</h3>
@@ -1017,6 +1021,7 @@ async function viewSquad() {
 
 async function viewSeason() {
   await loadState();
+  const clubInfo = await api('/club');
 
   const seasonRows = state.seasons.map(s => \`
     <div class="player-row">
@@ -1035,6 +1040,15 @@ async function viewSeason() {
   render(\`
     <a class="back" onclick="navigate('/')">&larr; Home</a>
     <h1>Season Management</h1>
+
+    <div class="card">
+      <h3>Club</h3>
+      <label class="text-sm text-muted">Club name</label>
+      <input type="text" id="club-name" value="\${esc(clubInfo.name || '')}">
+      <label class="text-sm text-muted">Player PIN (read-only access)</label>
+      <input type="text" id="club-player-pin" value="\${esc(clubInfo.player_pin || '')}" placeholder="e.g. 1111">
+      <button class="btn-primary mt-8" onclick="saveClubInfo()">Save</button>
+    </div>
 
     \${state.seasons.length ? \`
       <div class="card">
@@ -1056,6 +1070,14 @@ async function viewSeason() {
       <button class="btn-outline" style="width:100%;" onclick="navigate('/setup')">New Season Setup</button>
     </div>
   \`);
+}
+
+async function saveClubInfo() {
+  const name = document.getElementById('club-name').value.trim();
+  const playerPin = document.getElementById('club-player-pin').value.trim();
+  await api('/club', { method: 'PUT', body: { name, player_pin: playerPin } });
+  state.clubName = name;
+  showToast('Saved');
 }
 
 async function viewSettings(seasonId) {
