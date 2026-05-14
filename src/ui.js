@@ -898,7 +898,7 @@ async function viewRatings() {
         \${droppedIds.has(r.player_id) ? '<span class="badge badge-dropped">dropped</span>' : ''}
       </td>
       <td style="font-weight:600;">\${r.rating.toFixed(1)}</td>
-      <td class="text-sm text-muted">\${r.recent_scores.join(', ') || '-'}</td>
+      <td class="text-sm text-muted">\${fmtRecent(r)}</td>
       <td class="text-sm text-muted">\${r.games_played}</td>
     </tr>
   \`).join('');
@@ -953,7 +953,7 @@ async function viewPlayer(playerId) {
           <span class="text-sm text-muted"> avg</span>
           <span class="text-sm text-muted" style="margin-left:12px;">\${rating.games_played} \${rating.games_played === 1 ? 'game' : 'games'}</span>
         </div>
-        \${rating.recent_scores.length ? \`<div class="text-sm text-muted mt-8">Recent: \${rating.recent_scores.join(', ')}</div>\` : ''}
+        \${rating.recent_entries && rating.recent_entries.length ? \`<div class="text-sm text-muted mt-8">Recent: \${fmtRecent(rating)}</div>\` : ''}
       \` : ''}
     </div>
     <div class="card" style="overflow-x:auto;">
@@ -1092,6 +1092,9 @@ async function viewSettings(seasonId) {
       <h3>Rating System</h3>
       \${field('Rolling window (games)', 'rating_window')}
       \${field('Default rating', 'default_rating')}
+      \${field('Reserve score', 'reserve_score')}
+      \${field('Away score', 'away_score')}
+      <p class="text-sm text-muted mt-8">Reserve = available but not picked. Away = unavailable. These fill in gaps in the rolling average.</p>
     </div>
 
     <div class="card">
@@ -1197,7 +1200,7 @@ async function syncFixtures() {
 }
 
 async function saveConfig(seasonId) {
-  const fields = ['squad_size', 'reserve_count', 'pick_count', 'max_score', 'rating_window', 'default_rating', 'drop_count', 'drop_duration'];
+  const fields = ['squad_size', 'reserve_count', 'pick_count', 'max_score', 'rating_window', 'default_rating', 'reserve_score', 'away_score', 'drop_count', 'drop_duration'];
   const toggles = ['drop_enabled', 'drop_carry_over'];
   const body = {};
   for (const f of fields) {
@@ -1251,7 +1254,7 @@ async function copyRatings() {
     const num = String(i + 1).padStart(2);
     const name = r.name.padEnd(18);
     const avg = r.rating.toFixed(1).padStart(5);
-    const recent = r.recent_scores.join(', ') || '-';
+    const recent = fmtRecent(r);
     text += num + ' ' + name + avg + '  ' + recent + '\\n';
   });
 
@@ -1263,6 +1266,18 @@ async function copyRatings() {
 function fmtDate(iso) {
   const d = new Date(iso + 'T12:00:00');
   return d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+// Format recent scores with R/A markers
+function fmtRecent(r) {
+  if (!r.recent_entries || r.recent_entries.length === 0) {
+    return r.recent_scores && r.recent_scores.length ? r.recent_scores.join(', ') : '-';
+  }
+  return r.recent_entries.map(e => {
+    if (e.type === 'reserve') return 'R';
+    if (e.type === 'away') return 'A';
+    return e.score;
+  }).join(', ');
 }
 
 function fmtDateShort(iso) {

@@ -241,8 +241,8 @@ export async function handleApi(request, env) {
       if (method === 'PUT') {
         const body = await request.json();
         const fields = ['squad_size', 'reserve_count', 'pick_count', 'max_score',
-          'rating_window', 'default_rating', 'drop_enabled', 'drop_count',
-          'drop_duration', 'drop_carry_over'];
+          'rating_window', 'default_rating', 'reserve_score', 'away_score',
+          'drop_enabled', 'drop_count', 'drop_duration', 'drop_carry_over'];
         const sets = [];
         const vals = [];
         for (const f of fields) {
