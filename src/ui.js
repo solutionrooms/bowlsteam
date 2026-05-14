@@ -483,7 +483,7 @@ function setupStep4() {
 
       <div class="method-card \${setup.method === 'form_based' ? 'selected' : ''}" onclick="setup.method='form_based';viewSetup()">
         <h3>Form-based with drop rule</h3>
-        <p class="text-sm text-muted">Top 8 by rolling average of last 3 scores. Worst loser each week sits out the next match. Configurable parameters.</p>
+        <p class="text-sm text-muted">Top 8 by rolling average of last 4 scores. Worst loser each week sits out the next match. Configurable parameters.</p>
       </div>
 
       <p class="text-sm text-muted mt-12">More methods coming soon. You can adjust the parameters after setup.</p>
