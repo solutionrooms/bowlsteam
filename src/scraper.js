@@ -33,6 +33,18 @@ export async function scrapeRoster(url) {
 }
 
 /**
+ * Scrape a single match page from cgleague.
+ * Returns players in the order they appear in the table (playing order).
+ * @param {string} url - full URL to match page
+ * @param {string} ourTeamName - our team name (e.g. "Westlands 1")
+ * @returns {Promise<{venue:'Home'|'Away', rows: Array<{name:string, our_score:number, opp_score:number}>}>}
+ */
+export async function scrapeMatch(url, ourTeamName) {
+  const html = await fetchTeamPage(url);
+  return parseMatch(html, ourTeamName);
+}
+
+/**
  * Scrape both fixtures and roster in one fetch.
  * @param {string} url - full URL to team page
  * @param {number} year - season year
@@ -150,6 +162,46 @@ function parseRoster(html) {
   }
 
   return players;
+}
+
+/**
+ * Parse a match page. Each rink is one <tr> with 6 cells:
+ *   home name | home score | home gain | away name | away score | away gain
+ * Home team and away team names appear in the header row.
+ * Returns rows in the order they appear (playing order).
+ */
+function parseMatch(html, ourTeamName) {
+  // Identify which side is "us" by matching the team name in the header.
+  // The header has: HOME TEAM\n<a ...>Westlands 1</a> and AWAY TEAM\n<a ...>Wolstanton Marsh</a>
+  const headerMatch = html.match(/HOME TEAM[\s\S]*?>([^<]+)<\/a>[\s\S]*?AWAY TEAM[\s\S]*?>([^<]+)<\/a>/);
+  if (!headerMatch) return { venue: null, rows: [] };
+  const homeTeam = headerMatch[1].trim();
+  const awayTeam = headerMatch[2].trim();
+  const norm = s => s.trim().toLowerCase();
+  let venue;
+  if (norm(homeTeam) === norm(ourTeamName)) venue = 'Home';
+  else if (norm(awayTeam) === norm(ourTeamName)) venue = 'Away';
+  else return { venue: null, rows: [], homeTeam, awayTeam };
+
+  // Find data rows: <tr> containing 6 <td>s where the first is a MatchPlayerName
+  const rows = [];
+  const trRegex = /<tr>\s*<td class="MatchPlayerName">([\s\S]*?)<\/td>\s*<td class="MatchScore">([\s\S]*?)<\/td>\s*<td class="MatchScore">[\s\S]*?<\/td>\s*<td class="MatchPlayerName">([\s\S]*?)<\/td>\s*<td class="MatchScore">([\s\S]*?)<\/td>\s*<td class="MatchScore">[\s\S]*?<\/td>\s*<\/tr>/g;
+  let m;
+  while ((m = trRegex.exec(html)) !== null) {
+    const homeName = stripTags(m[1]).replace(/ /g, ' ').trim();
+    const homeScore = parseInt(stripTags(m[2])) || 0;
+    const awayName = stripTags(m[3]).replace(/ /g, ' ').trim();
+    const awayScore = parseInt(stripTags(m[4])) || 0;
+    const ourName = venue === 'Home' ? homeName : awayName;
+    const ourScore = venue === 'Home' ? homeScore : awayScore;
+    const oppScore = venue === 'Home' ? awayScore : homeScore;
+    if (ourName) rows.push({ name: ourName, our_score: ourScore, opp_score: oppScore });
+  }
+  return { venue, rows, homeTeam, awayTeam };
+}
+
+function stripTags(s) {
+  return s.replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&');
 }
 
 /**

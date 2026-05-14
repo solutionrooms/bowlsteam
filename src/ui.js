@@ -821,7 +821,7 @@ async function viewFixture(fixtureId) {
   if (hasSelection && !hasResults && fixture.status === 'upcoming') {
     const selected = fixture.selections.filter(s => s.is_selected);
     const entryRows = selected.map(s => \`
-      <div class="score-row">
+      <div class="score-row" data-row-player="\${s.player_id}">
         <span class="name">\${s.name}</span>
         <input type="number" min="0" max="\${config.max_score}" data-result-player="\${s.player_id}" data-field="player_score" placeholder="0">
         <span class="vs">-</span>
@@ -830,8 +830,11 @@ async function viewFixture(fixtureId) {
     \`).join('');
     scoreEntryHtml = \`
       <div class="card">
-        <h3>Enter Scores</h3>
-        \${entryRows}
+        <div class="flex-between mb-8">
+          <h3>Enter Scores</h3>
+          <button class="btn-sm btn-outline" onclick="importMatchResults(\${fixtureId})">Import from URL</button>
+        </div>
+        <div id="score-entry-rows">\${entryRows}</div>
         <button class="btn-success mt-12" onclick="submitResults(\${fixtureId})">Save Results</button>
       </div>
     \`;
@@ -1132,6 +1135,37 @@ async function doRunSelection(fixtureId) {
   }
   await api('/fixtures/' + fixtureId + '/select', { method: 'POST' });
   viewFixture(fixtureId);
+}
+
+async function importMatchResults(fixtureId) {
+  const url = prompt('Paste the cgleague match URL:');
+  if (!url) return;
+  const fixture = await api('/fixtures/' + fixtureId);
+  const config = await api('/seasons/' + fixture.season_id + '/config');
+  let data;
+  try {
+    data = await api('/fixtures/' + fixtureId + '/import-results-preview', { method: 'POST', body: { url } });
+  } catch (e) { return; }
+
+  // Re-render score entry rows in the imported order, prefilled
+  const container = document.getElementById('score-entry-rows');
+  if (!container) return;
+  const rows = data.rows.map(r => {
+    const label = r.player_id ? r.name : (r.name + ' (no match)');
+    if (!r.player_id) {
+      return '<div class="score-row"><span class="name" style="color:#999;">' + label + '</span><span class="text-sm text-muted">skipped</span></div>';
+    }
+    return '<div class="score-row" data-row-player="' + r.player_id + '">' +
+      '<span class="name">' + r.name + '</span>' +
+      '<input type="number" min="0" max="' + config.max_score + '" data-result-player="' + r.player_id + '" data-field="player_score" value="' + r.our_score + '">' +
+      '<span class="vs">-</span>' +
+      '<input type="number" min="0" max="' + config.max_score + '" data-result-player="' + r.player_id + '" data-field="opponent_score" value="' + r.opp_score + '">' +
+      '</div>';
+  }).join('');
+  container.innerHTML = rows;
+  const unmatched = data.rows.filter(r => !r.player_id).length;
+  if (unmatched > 0) showToast(unmatched + ' player(s) not matched — check names', true);
+  else showToast('Imported ' + data.rows.length + ' results');
 }
 
 async function submitResults(fixtureId) {

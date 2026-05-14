@@ -1,5 +1,5 @@
 import { getAllRatings, runSelection, determineDroppedPlayer } from './selection.js';
-import { scrapeAll, scrapeFixtures } from './scraper.js';
+import { scrapeAll, scrapeFixtures, scrapeMatch } from './scraper.js';
 
 // --- Auth helper: resolve club from PIN header ---
 async function getClub(request, db) {
@@ -492,6 +492,46 @@ export async function handleApi(request, env) {
         ORDER BY s.is_selected DESC, s.rating_at_selection DESC
       `).bind(fixtureId).all();
       return json(sel.results);
+    }
+
+    // --- Import results preview from cgleague match URL ---
+    const importResultsMatch = path.match(/^\/api\/fixtures\/(\d+)\/import-results-preview$/);
+    if (importResultsMatch && method === 'POST') {
+      const fixtureId = parseInt(importResultsMatch[1]);
+      const body = await request.json();
+      const matchUrl = body.url;
+      if (!matchUrl) return error('url required', 400);
+
+      // Verify fixture ownership and get team name
+      const fix = await db.prepare(
+        `SELECT f.*, t.name as team_name FROM fixtures f
+         JOIN seasons s ON f.season_id = s.id
+         JOIN teams t ON s.team_id = t.id
+         WHERE f.id = ? AND t.club_id = ?`
+      ).bind(fixtureId, clubId).first();
+      if (!fix) return error('Fixture not found', 404);
+
+      const scraped = await scrapeMatch(matchUrl, fix.team_name);
+      if (!scraped.venue) {
+        return error('Could not match team name "' + fix.team_name + '" against home (' + (scraped.homeTeam || '?') + ') or away (' + (scraped.awayTeam || '?') + ')', 400);
+      }
+
+      // Match scraped names to active players for this team
+      const players = await db.prepare(
+        'SELECT id, name FROM players WHERE team_id = ? AND is_active = 1'
+      ).bind(fix.team_id || (await db.prepare('SELECT team_id FROM seasons WHERE id = ?').bind(fix.season_id).first()).team_id).all();
+
+      const byName = {};
+      for (const p of players.results) byName[p.name.toLowerCase()] = p.id;
+
+      const rows = scraped.rows.map(r => ({
+        name: r.name,
+        player_id: byName[r.name.toLowerCase()] || null,
+        our_score: r.our_score,
+        opp_score: r.opp_score,
+      }));
+
+      return json({ venue: scraped.venue, rows });
     }
 
     // --- Results ---
