@@ -134,13 +134,16 @@ function parseRoster(html) {
 
   const tableHtml = html.slice(tableStart, tableEnd);
 
-  // Extract player names from cells with data-customkey containing name patterns
-  // Format: <td class='B05' data-customkey='Adams Derek'>\nDerek Adams\n</td>
-  // Name key can contain hyphens (e.g. 'Forrest-Hay Guy')
-  const nameRegex = /<td[^>]*data-customkey='([A-Za-z-]+ [A-Za-z-]+[^']*)'[^>]*>\s*\n?\s*([^<]+)/g;
+  // Extract player names from cells with data-customkey matching "Surname Firstname".
+  // Two formats appear in the page:
+  //   <td data-customkey='Adams Derek'>Derek Adams</td>           (no stats)
+  //   <td data-customkey='Davies Ann'><a href='...'>Ann Davies</a></td>  (has stats)
+  // We capture the whole cell body and strip HTML tags.
+  // Surnames can contain hyphens (e.g. "Forrest-Hay Guy").
+  const nameRegex = /<td[^>]*data-customkey='([A-Za-z][A-Za-z-]* [A-Za-z][A-Za-z-]*(?: [A-Za-z][A-Za-z-]*)?)'[^>]*>([\s\S]*?)<\/td>/g;
   let match;
   while ((match = nameRegex.exec(tableHtml)) !== null) {
-    const name = match[2].trim();
+    const name = match[2].replace(/<[^>]+>/g, '').trim();
     if (name && name.length > 1) {
       players.push({ name });
     }
