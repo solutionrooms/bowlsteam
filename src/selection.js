@@ -195,11 +195,24 @@ export async function runSelection(db, fixtureId, seasonId, config) {
 
   // Build candidate pool: available AND not dropped
   const candidates = ratings
-    .filter(r => availableIds.has(r.player_id) && !droppedIds.has(r.player_id))
-    .sort((a, b) => b.rating - a.rating);
+    .filter(r => availableIds.has(r.player_id) && !droppedIds.has(r.player_id));
 
-  const selected = candidates.slice(0, config.pick_count);
-  const notSelected = candidates.slice(config.pick_count);
+  // Core players are always picked before reserves. Within each group, sort by rating.
+  const coreCandidates = candidates.filter(r => !r.is_reserve).sort((a, b) => b.rating - a.rating);
+  const reserveCandidates = candidates.filter(r => r.is_reserve).sort((a, b) => b.rating - a.rating);
+
+  const selected = [];
+  for (const c of coreCandidates) {
+    if (selected.length >= config.pick_count) break;
+    selected.push(c);
+  }
+  for (const c of reserveCandidates) {
+    if (selected.length >= config.pick_count) break;
+    selected.push(c);
+  }
+
+  const selectedIds = new Set(selected.map(s => s.player_id));
+  const notSelected = [...coreCandidates, ...reserveCandidates].filter(c => !selectedIds.has(c.player_id));
 
   // Dropped players info (only those who were available — consumed if unavailable)
   const droppedInfo = droppedPlayers.map(d => ({
