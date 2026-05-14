@@ -708,6 +708,9 @@ async function viewFixture(fixtureId) {
   const fixture = await api('/fixtures/' + fixtureId);
   const config = await api('/seasons/' + fixture.season_id + '/config');
   const players = await api('/players?team_id=' + fixture.team_id);
+  const ratings = await api('/ratings?season_id=' + fixture.season_id);
+  const ratingMap = {};
+  for (const r of ratings) ratingMap[r.player_id] = r;
 
   const availMap = {};
   for (const a of fixture.availability) availMap[a.player_id] = a.is_available;
@@ -736,8 +739,19 @@ async function viewFixture(fixtureId) {
   let selectionHtml = '';
   if (hasSelection) {
     const selected = fixture.selections.filter(s => s.is_selected);
-    const dropped = fixture.selections.filter(s => s.is_dropped);
     const notSelected = fixture.selections.filter(s => !s.is_selected && !s.is_dropped);
+
+    // Players not in any selection record = were unavailable when selection ran
+    const inSelection = new Set(fixture.selections.map(s => s.player_id));
+    const unavailable = players
+      .filter(p => !inSelection.has(p.id))
+      .map(p => ({
+        player_id: p.id,
+        name: p.name,
+        is_reserve: p.is_reserve,
+        rating: (ratingMap[p.id] || {}).rating,
+      }))
+      .sort((a, b) => (b.rating || 0) - (a.rating || 0));
 
     const selRows = selected.map(s => \`
       <div class="selected-item">
@@ -746,17 +760,16 @@ async function viewFixture(fixtureId) {
       </div>
     \`).join('');
 
-    let droppedHtml = '';
-    if (dropped.length > 0) {
-      droppedHtml = dropped.map(d => \`
-        <div class="dropped-banner">Dropped: \${d.name} (rating: \${d.rating_at_selection.toFixed(1)})</div>
-      \`).join('');
-    }
-
     let notSelHtml = '';
     if (notSelected.length > 0) {
       notSelHtml = '<div class="text-sm text-muted mt-8">Not selected:</div>' +
-        notSelected.map(s => \`<div class="text-sm" style="padding:4px 0;">\${s.name} (\${s.rating_at_selection.toFixed(1)})</div>\`).join('');
+        notSelected.map(s => \`<div class="text-sm" style="padding:4px 0;">\${s.name}\${s.is_reserve ? ' <span class="badge badge-reserve">R</span>' : ''} (\${s.rating_at_selection.toFixed(1)})</div>\`).join('');
+    }
+
+    let unavailHtml = '';
+    if (unavailable.length > 0) {
+      unavailHtml = '<div class="text-sm text-muted mt-8">Unavailable:</div>' +
+        unavailable.map(u => \`<div class="text-sm" style="padding:4px 0;">\${u.name}\${u.is_reserve ? ' <span class="badge badge-reserve">R</span>' : ''} (\${u.rating != null ? u.rating.toFixed(1) : '-'})</div>\`).join('');
     }
 
     selectionHtml = \`
@@ -765,9 +778,9 @@ async function viewFixture(fixtureId) {
           <h3>Selection (\${selected.length})</h3>
           <button class="copy-btn" onclick="copySelection(\${fixtureId})">Copy</button>
         </div>
-        \${droppedHtml}
         <div class="selected-list">\${selRows}</div>
         \${notSelHtml}
+        \${unavailHtml}
       </div>
     \`;
   }
@@ -1245,8 +1258,18 @@ async function copySelection(fixtureId) {
 
   const sel = fixture.selections.filter(s => s.is_selected)
     .sort((a, b) => (b.rating_at_selection || 0) - (a.rating_at_selection || 0));
-  const dropped = fixture.selections.filter(s => s.is_dropped);
   const notSel = fixture.selections.filter(s => !s.is_selected && !s.is_dropped);
+
+  // Unavailable: active players not in selection records
+  const teamPlayers = await api('/players?team_id=' + fixture.team_id);
+  const ratings = await api('/ratings?season_id=' + fixture.season_id);
+  const ratingMap = {};
+  for (const r of ratings) ratingMap[r.player_id] = r;
+  const inSel = new Set(fixture.selections.map(s => s.player_id));
+  const unavailable = teamPlayers
+    .filter(p => !inSel.has(p.id))
+    .map(p => ({ name: p.name, rating: (ratingMap[p.id] || {}).rating }))
+    .sort((a, b) => (b.rating || 0) - (a.rating || 0));
 
   let text = teamName + ' vs ' + fixture.opponent + ' (' + fixture.venue + ')\\n';
   text += fmtDate(fixture.match_date) + '\\n\\n';
@@ -1254,13 +1277,16 @@ async function copySelection(fixtureId) {
   sel.forEach((s, i) => {
     text += (i + 1) + '. ' + s.name.padEnd(18) + ' - ' + (s.rating_at_selection || 0).toFixed(1) + '\\n';
   });
-  if (dropped.length) {
-    text += '\\nDROPPED: ' + dropped.map(d => d.name).join(', ') + '\\n';
-  }
   if (notSel.length) {
     text += '\\nNOT SELECTED:\\n';
     notSel.forEach(s => {
       text += '- ' + s.name + ' (' + (s.rating_at_selection || 0).toFixed(1) + ')\\n';
+    });
+  }
+  if (unavailable.length) {
+    text += '\\nUNAVAILABLE:\\n';
+    unavailable.forEach(u => {
+      text += '- ' + u.name + ' (' + (u.rating != null ? u.rating.toFixed(1) : '-') + ')\\n';
     });
   }
 
