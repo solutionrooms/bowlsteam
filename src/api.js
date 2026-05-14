@@ -635,6 +635,99 @@ export async function handleApi(request, env) {
       return json(ratings);
     }
 
+    // --- Player Timeline (per-fixture info) ---
+    const timelineMatch = path.match(/^\/api\/players\/(\d+)\/timeline$/);
+    if (timelineMatch && method === 'GET') {
+      const playerId = parseInt(timelineMatch[1]);
+      const seasonId = parseInt(url.searchParams.get('season_id') || '0');
+      if (!seasonId) return error('season_id required', 400);
+
+      const owns = await db.prepare(
+        'SELECT s.id FROM seasons s JOIN teams t ON s.team_id = t.id WHERE s.id = ? AND t.club_id = ?'
+      ).bind(seasonId, clubId).first();
+      if (!owns) return error('Season not found', 404);
+
+      const config = await db.prepare('SELECT * FROM season_config WHERE season_id = ?').bind(seasonId).first();
+      if (!config) return error('Config not found', 404);
+
+      const fixtures = await db.prepare(`
+        SELECT id, week_number, match_date, opponent, venue, status
+        FROM fixtures WHERE season_id = ?
+        ORDER BY match_date ASC
+      `).bind(seasonId).all();
+
+      const pResults = await db.prepare(
+        'SELECT fixture_id, player_score, opponent_score FROM results WHERE player_id = ?'
+      ).bind(playerId).all();
+      const resultsByFix = {};
+      for (const r of pResults.results) resultsByFix[r.fixture_id] = r;
+
+      const pAvail = await db.prepare(
+        'SELECT fixture_id, is_available FROM availability WHERE player_id = ?'
+      ).bind(playerId).all();
+      const availByFix = {};
+      for (const a of pAvail.results) availByFix[a.fixture_id] = a.is_available;
+
+      const pSel = await db.prepare(
+        'SELECT fixture_id, is_selected, is_dropped, rating_at_selection FROM selections WHERE player_id = ?'
+      ).bind(playerId).all();
+      const selByFix = {};
+      for (const s of pSel.results) selByFix[s.fixture_id] = s;
+
+      const entries = [];
+      const timeline = [];
+
+      for (const f of fixtures.results) {
+        let entryType = null;
+        let entryScore = null;
+        let result = null;
+
+        if (f.status === 'completed') {
+          const r = resultsByFix[f.id];
+          if (r) {
+            entryType = 'played';
+            entryScore = r.player_score;
+            result = { player_score: r.player_score, opp_score: r.opponent_score };
+          } else {
+            const isAvail = availByFix[f.id];
+            if (isAvail) {
+              entryType = 'reserve';
+              entryScore = config.reserve_score;
+            } else {
+              entryType = 'away';
+              entryScore = config.away_score;
+            }
+          }
+          entries.push(entryScore);
+        }
+
+        let ratingAfter = null;
+        if (entries.length > 0) {
+          const recent = entries.slice(-config.rating_window);
+          ratingAfter = recent.reduce((s, v) => s + v, 0) / recent.length;
+        }
+
+        const sel = selByFix[f.id];
+        timeline.push({
+          fixture_id: f.id,
+          week_number: f.week_number,
+          match_date: f.match_date,
+          opponent: f.opponent,
+          venue: f.venue,
+          status: f.status,
+          was_available: availByFix[f.id] !== undefined ? !!availByFix[f.id] : null,
+          was_selected: sel ? !!sel.is_selected : null,
+          entry_type: entryType,
+          entry_score: entryScore,
+          result,
+          rating_after: ratingAfter !== null ? Math.round(ratingAfter * 100) / 100 : null,
+          recent_scores: entries.slice(-config.rating_window),
+        });
+      }
+
+      return json(timeline);
+    }
+
     // --- Player History ---
     const historyMatch = path.match(/^\/api\/players\/(\d+)\/history$/);
     if (historyMatch && method === 'GET') {

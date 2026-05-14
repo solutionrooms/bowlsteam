@@ -728,7 +728,7 @@ async function viewFixture(fixtureId) {
     return \`
       <div class="toggle-row">
         <div>
-          <span>\${p.name}</span>
+          \${playerLink(p.id, p.name)}
           \${p.is_reserve ? '<span class="badge badge-reserve" style="margin-left:6px;">R</span>' : ''}
         </div>
         <label class="toggle">
@@ -759,7 +759,7 @@ async function viewFixture(fixtureId) {
 
     const selRows = selected.map(s => \`
       <div class="selected-item">
-        <span style="flex:1;">\${s.name} \${s.is_reserve ? '<span class="badge badge-reserve">R</span>' : ''}</span>
+        <span style="flex:1;">\${playerLink(s.player_id, s.name)} \${s.is_reserve ? '<span class="badge badge-reserve">R</span>' : ''}</span>
         <span class="text-sm text-muted">\${s.rating_at_selection.toFixed(1)}</span>
       </div>
     \`).join('');
@@ -767,13 +767,13 @@ async function viewFixture(fixtureId) {
     let notSelHtml = '';
     if (notSelected.length > 0) {
       notSelHtml = '<div class="text-sm text-muted mt-8">Not selected:</div>' +
-        notSelected.map(s => \`<div class="text-sm" style="padding:4px 0;">\${s.name}\${s.is_reserve ? ' <span class="badge badge-reserve">R</span>' : ''} (\${s.rating_at_selection.toFixed(1)})</div>\`).join('');
+        notSelected.map(s => \`<div class="text-sm" style="padding:4px 0;">\${playerLink(s.player_id, s.name)}\${s.is_reserve ? ' <span class="badge badge-reserve">R</span>' : ''} (\${s.rating_at_selection.toFixed(1)})</div>\`).join('');
     }
 
     let unavailHtml = '';
     if (unavailable.length > 0) {
       unavailHtml = '<div class="text-sm text-muted mt-8">Unavailable:</div>' +
-        unavailable.map(u => \`<div class="text-sm" style="padding:4px 0;">\${u.name}\${u.is_reserve ? ' <span class="badge badge-reserve">R</span>' : ''} (\${u.rating != null ? u.rating.toFixed(1) : '-'})</div>\`).join('');
+        unavailable.map(u => \`<div class="text-sm" style="padding:4px 0;">\${playerLink(u.player_id, u.name)}\${u.is_reserve ? ' <span class="badge badge-reserve">R</span>' : ''} (\${u.rating != null ? u.rating.toFixed(1) : '-'})</div>\`).join('');
     }
 
     selectionHtml = \`
@@ -796,7 +796,7 @@ async function viewFixture(fixtureId) {
       const won = r.player_score > r.opponent_score;
       return \`
         <div class="score-row">
-          <span class="name">\${r.name}</span>
+          <span class="name">\${playerLink(r.player_id, r.name)}</span>
           <span class="\${won ? 'win' : 'loss'}">\${r.player_score}</span>
           <span class="vs">-</span>
           <span class="\${won ? 'loss' : 'win'}">\${r.opponent_score}</span>
@@ -927,33 +927,56 @@ async function viewRatings() {
 
 async function viewPlayer(playerId) {
   if (!state.seasonId) { navigate('/'); return; }
-  const [players, history, ratings] = await Promise.all([
+  const [players, timeline, ratings] = await Promise.all([
     api('/players?team_id=' + state.teamId),
-    api('/players/' + playerId + '/history?season_id=' + state.seasonId),
+    api('/players/' + playerId + '/timeline?season_id=' + state.seasonId),
     api('/ratings?season_id=' + state.seasonId),
   ]);
 
   const player = players.find(p => p.id === playerId);
   const rating = ratings.find(r => r.player_id === playerId);
 
-  const rows = history.map(h => {
-    const won = h.player_score > h.opponent_score;
-    const margin = Math.abs(h.player_score - h.opponent_score);
+  const rows = timeline.map(t => {
+    let avail = '-';
+    if (t.was_available === true) avail = '<span class="win">✓</span>';
+    else if (t.was_available === false) avail = '<span class="loss">✗</span>';
+
+    let status = '-';
+    let statusClass = 'text-muted';
+    if (t.entry_type === 'played') { status = 'Played'; statusClass = ''; }
+    else if (t.entry_type === 'reserve') { status = 'Reserve'; statusClass = 'badge badge-reserve'; }
+    else if (t.entry_type === 'away') { status = 'Away'; statusClass = ''; }
+
+    let resultHtml = '-';
+    let resultClass = '';
+    if (t.result) {
+      const won = t.result.player_score > t.result.opp_score;
+      resultClass = won ? 'win' : 'loss';
+      resultHtml = t.result.player_score + '-' + t.result.opp_score;
+    }
+
+    const recent = t.recent_scores && t.recent_scores.length
+      ? t.recent_scores.map(s => Number.isInteger(s) ? s : s.toFixed(0)).join(',')
+      : '-';
+
     return \`
       <tr>
-        <td class="text-sm">\${fmtDateShort(h.match_date)}</td>
-        <td class="text-sm">\${h.opponent}</td>
-        <td class="text-sm">\${h.venue}</td>
-        <td class="\${won ? 'win' : 'loss'}">\${h.player_score}-\${h.opponent_score}</td>
-        <td class="\${won ? 'win' : 'loss'}">\${won ? '+' : '-'}\${margin}</td>
+        <td class="text-sm">\${fmtDateShort(t.match_date)}</td>
+        <td class="text-sm">\${t.opponent}</td>
+        <td class="text-sm">\${t.venue.charAt(0)}</td>
+        <td class="text-sm" style="text-align:center;">\${avail}</td>
+        <td class="text-sm \${statusClass}">\${status}</td>
+        <td class="text-sm \${resultClass}">\${resultHtml}</td>
+        <td class="text-sm" style="font-weight:600;">\${t.rating_after != null ? t.rating_after.toFixed(1) : '-'}</td>
+        <td class="text-sm text-muted">\${recent}</td>
       </tr>
     \`;
   }).join('');
 
   render(\`
-    <a class="back" onclick="navigate('/ratings')">&larr; Ratings</a>
+    <a class="back" onclick="history.back()">&larr; Back</a>
     <div class="card">
-      <h2>\${player ? player.name : 'Player'}</h2>
+      <h2>\${player ? player.name : 'Player'} \${player && player.is_reserve ? '<span class="badge badge-reserve">R</span>' : ''}</h2>
       \${rating ? \`
         <div class="mt-8">
           <span style="font-size:1.3rem;font-weight:700;">\${rating.rating.toFixed(1)}</span>
@@ -964,13 +987,13 @@ async function viewPlayer(playerId) {
       \` : ''}
     </div>
     <div class="card" style="overflow-x:auto;">
-      <h3>Match History</h3>
-      \${history.length ? \`
+      <h3>Season Timeline</h3>
+      \${timeline.length ? \`
         <table>
-          <thead><tr><th>Date</th><th>vs</th><th>V</th><th>Score</th><th>+/-</th></tr></thead>
+          <thead><tr><th>Date</th><th>vs</th><th>V</th><th>Avail</th><th>Status</th><th>Result</th><th>Avg</th><th>Recent</th></tr></thead>
           <tbody>\${rows}</tbody>
         </table>
-      \` : '<div class="empty">No matches played yet</div>'}
+      \` : '<div class="empty">No fixtures yet</div>'}
     </div>
   \`);
 }
@@ -983,7 +1006,7 @@ async function viewSquad() {
 
   const makeRow = (p) => \`
     <div class="player-row">
-      <span>\${p.name}</span>
+      <span>\${playerLink(p.id, p.name)}</span>
       \${isCaptain() ? \`<div style="display:flex;gap:4px;">
         <button class="btn-sm btn-outline" onclick="toggleReserve(\${p.id}, \${p.is_reserve ? 0 : 1})">\${p.is_reserve ? 'Make Core' : 'Make Res'}</button>
         <button class="btn-sm btn-danger" onclick="deactivatePlayer(\${p.id})">Remove</button>
@@ -1356,6 +1379,10 @@ function fmtDateShort(iso) {
 
 function esc(s) {
   return (s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
+
+function playerLink(playerId, name) {
+  return '<a onclick="navigate(\\'/player/' + playerId + '\\')" style="cursor:pointer;color:inherit;text-decoration:none;border-bottom:1px dotted #999;">' + name + '</a>';
 }
 
   </script>
