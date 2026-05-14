@@ -880,25 +880,12 @@ async function viewRatings() {
   if (!state.seasonId) { navigate('/'); return; }
   const ratings = await api('/ratings?season_id=' + state.seasonId);
 
-  const fixtures = await api('/fixtures?season_id=' + state.seasonId);
-  const upcoming = fixtures.filter(f => f.status === 'upcoming');
-  let droppedIds = new Set();
-  if (upcoming.length > 0) {
-    try {
-      const sel = await api('/fixtures/' + upcoming[0].id + '/selection');
-      for (const s of sel) {
-        if (s.is_dropped) droppedIds.add(s.player_id);
-      }
-    } catch (e) {}
-  }
-
   const rows = ratings.map((r, i) => \`
     <tr onclick="navigate('/player/\${r.player_id}')" style="cursor:pointer;">
       <td>\${i + 1}</td>
       <td>
         \${r.name}
         \${r.is_reserve ? '<span class="badge badge-reserve">R</span>' : ''}
-        \${droppedIds.has(r.player_id) ? '<span class="badge badge-dropped">dropped</span>' : ''}
       </td>
       <td style="font-weight:600;">\${r.rating.toFixed(1)}</td>
       <td class="text-sm text-muted">\${fmtRecent(r)}</td>

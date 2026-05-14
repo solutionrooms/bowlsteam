@@ -189,23 +189,10 @@ export async function runSelection(db, fixtureId, seasonId, config) {
     avail.results.filter(a => a.is_available).map(a => a.player_id)
   );
 
-  // Determine dropped players from previous match
-  const droppedPlayers = await getDroppedForFixture(db, fixtureId, seasonId, config, ratings);
-  const droppedIds = new Set(droppedPlayers.map(d => d.player_id));
-
-  // Build available pool split by role
-  const availableCore = ratings.filter(r => availableIds.has(r.player_id) && !r.is_reserve);
-  const availableReserve = ratings.filter(r => availableIds.has(r.player_id) && r.is_reserve);
-
-  // Only enforce the drop rule if we still have enough cores after dropping.
-  // Otherwise dropping would force a reserve to play, which we don't want.
-  const coresAfterDrop = availableCore.filter(r => !droppedIds.has(r.player_id)).length;
-  const enforceDrop = coresAfterDrop >= config.pick_count;
-  const effectiveDroppedIds = enforceDrop ? droppedIds : new Set();
-
-  // Core players are always picked before reserves. Within each group, sort by rating.
-  const coreCandidates = availableCore.filter(r => !effectiveDroppedIds.has(r.player_id)).sort((a, b) => b.rating - a.rating);
-  const reserveCandidates = availableReserve.sort((a, b) => b.rating - a.rating);
+  // Available cores are never excluded — they always play if available.
+  // Reserves only fill in when there aren't enough cores available.
+  const coreCandidates = ratings.filter(r => availableIds.has(r.player_id) && !r.is_reserve).sort((a, b) => b.rating - a.rating);
+  const reserveCandidates = ratings.filter(r => availableIds.has(r.player_id) && r.is_reserve).sort((a, b) => b.rating - a.rating);
 
   const selected = [];
   for (const c of coreCandidates) {
@@ -220,12 +207,8 @@ export async function runSelection(db, fixtureId, seasonId, config) {
   const selectedIds = new Set(selected.map(s => s.player_id));
   const notSelected = [...coreCandidates, ...reserveCandidates].filter(c => !selectedIds.has(c.player_id));
 
-  // Dropped players info (only those who were available — consumed if unavailable)
-  // If the drop wasn't enforced (would have forced a reserve), don't list anyone as dropped.
-  const droppedInfo = enforceDrop ? droppedPlayers.map(d => ({
-    ...d,
-    was_available: availableIds.has(d.player_id),
-  })) : [];
+  // Drop rule is informational only — available cores are never excluded.
+  const droppedInfo = [];
 
   return {
     selected,
