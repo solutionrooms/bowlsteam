@@ -40,16 +40,16 @@ export async function getAllRatings(db, seasonId, teamId, config) {
 
   // Pre-load results and availability for these fixtures
   const fixtureIds = fixtures.results.map(f => f.id);
-  const resultsByFix = {};
+  const resultsByFix = {}; // fixture_id → player_id → { score, opp }
   const availByFix = {};
   if (fixtureIds.length > 0) {
     const placeholders = fixtureIds.map(() => '?').join(',');
     const allResults = await db.prepare(
-      `SELECT fixture_id, player_id, player_score FROM results WHERE fixture_id IN (${placeholders})`
+      `SELECT fixture_id, player_id, player_score, opponent_score FROM results WHERE fixture_id IN (${placeholders})`
     ).bind(...fixtureIds).all();
     for (const r of allResults.results) {
       if (!resultsByFix[r.fixture_id]) resultsByFix[r.fixture_id] = {};
-      resultsByFix[r.fixture_id][r.player_id] = r.player_score;
+      resultsByFix[r.fixture_id][r.player_id] = { score: r.player_score, opp: r.opponent_score };
     }
     const allAvail = await db.prepare(
       `SELECT fixture_id, player_id, is_available FROM availability WHERE fixture_id IN (${placeholders})`
@@ -62,10 +62,18 @@ export async function getAllRatings(db, seasonId, teamId, config) {
 
   return players.results.map(p => {
     const entries = []; // newest-first list of {score, type}
+    let wins = 0;
+    let losses = 0;
+    let pointsFor = 0;
+    let pointsAgainst = 0;
     for (const f of fixtures.results) {
-      const score = resultsByFix[f.id] && resultsByFix[f.id][p.id];
-      if (score !== undefined) {
-        entries.push({ score, type: 'played' });
+      const r = resultsByFix[f.id] && resultsByFix[f.id][p.id];
+      if (r !== undefined) {
+        entries.push({ score: r.score, type: 'played' });
+        if (r.score > r.opp) wins++;
+        else if (r.score < r.opp) losses++;
+        pointsFor += r.score;
+        pointsAgainst += r.opp;
       } else {
         const isAvail = availByFix[f.id] && availByFix[f.id][p.id];
         // Default to "away" if no availability record (player wasn't tracked for that match)
@@ -89,6 +97,10 @@ export async function getAllRatings(db, seasonId, teamId, config) {
       is_reserve: p.is_reserve,
       rating: Math.round(rating * 100) / 100,
       games_played: gamesPlayed,
+      wins,
+      losses,
+      points_for: pointsFor,
+      points_against: pointsAgainst,
       recent_scores: recentEntries.map(e => e.score),
       recent_entries: recentEntries,
     };

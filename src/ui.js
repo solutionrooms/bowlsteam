@@ -902,18 +902,32 @@ async function viewRatings() {
   const cores = ratings.filter(r => !r.is_reserve);
   const reserves = ratings.filter(r => r.is_reserve);
 
-  const makeRow = (r, i) => \`
+  const makeRow = (r, i) => {
+    const record = r.games_played > 0
+      ? '<span class="win">' + r.wins + '</span>-<span class="loss">' + r.losses + '</span>'
+      : '-';
+    const points = r.games_played > 0
+      ? r.points_for + '–' + r.points_against
+      : '-';
+    return \`
     <tr onclick="navigate('/player/\${r.player_id}')" style="cursor:pointer;">
       <td>\${i + 1}</td>
       <td>\${r.name}</td>
       <td style="font-weight:600;">\${r.rating.toFixed(1)}</td>
+      <td class="text-sm" style="white-space:nowrap;">\${record}</td>
+      <td class="text-sm text-muted" style="white-space:nowrap;">\${points}</td>
       <td class="text-sm text-muted">\${fmtRecent(r)}</td>
-      <td class="text-sm text-muted">\${r.games_played}</td>
     </tr>
-  \`;
+  \`;};
 
   const coreRows = cores.map(makeRow).join('');
   const reserveRows = reserves.map(makeRow).join('');
+
+  // Team totals (cores + reserves combined)
+  const totW = ratings.reduce((s, r) => s + (r.wins || 0), 0);
+  const totL = ratings.reduce((s, r) => s + (r.losses || 0), 0);
+  const totPF = ratings.reduce((s, r) => s + (r.points_for || 0), 0);
+  const totPA = ratings.reduce((s, r) => s + (r.points_against || 0), 0);
 
   render(\`
     <a class="back" onclick="navigate('/')">&larr; Home</a>
@@ -921,11 +935,18 @@ async function viewRatings() {
       <h1>Ratings</h1>
       <button class="copy-btn" onclick="copyRatings()">Copy</button>
     </div>
+    \${totW + totL > 0 ? \`
+      <div class="card">
+        <h3>Team Totals</h3>
+        <div class="text-sm">Games: <span class="win">\${totW}W</span> – <span class="loss">\${totL}L</span></div>
+        <div class="text-sm">Points: \${totPF} – \${totPA} (diff \${totPF - totPA >= 0 ? '+' : ''}\${totPF - totPA})</div>
+      </div>
+    \` : ''}
     \${cores.length ? \`
       <div class="card" style="overflow-x:auto;">
         <h3>Core (\${cores.length})</h3>
         <table>
-          <thead><tr><th>#</th><th>Player</th><th>Avg</th><th>Recent</th><th>P</th></tr></thead>
+          <thead><tr><th>#</th><th>Player</th><th>Avg</th><th>W-L</th><th>Pts</th><th>Recent</th></tr></thead>
           <tbody>\${coreRows}</tbody>
         </table>
       </div>
@@ -934,16 +955,16 @@ async function viewRatings() {
       <div class="card" style="overflow-x:auto;">
         <h3>Reserves (\${reserves.length})</h3>
         <table>
-          <thead><tr><th>#</th><th>Player</th><th>Avg</th><th>Recent</th><th>P</th></tr></thead>
+          <thead><tr><th>#</th><th>Player</th><th>Avg</th><th>W-L</th><th>Pts</th><th>Recent</th></tr></thead>
           <tbody>\${reserveRows}</tbody>
         </table>
       </div>
     \` : ''}
     <div class="card text-sm text-muted">
       <strong>Key:</strong>
-      <span style="margin-left:8px;"><strong style="color:#7c3aed;">R</strong> = reserve week (available but not selected, counts as 20)</span><br>
-      <span style="margin-left:48px;"><strong style="color:#dc2626;">A</strong> = away (unavailable, counts as 19)</span><br>
-      <span style="margin-left:48px;">P = games played</span>
+      <div style="margin-top:4px;"><strong style="color:#7c3aed;">R</strong> = reserve week (available but not selected, counts as 20)</div>
+      <div><strong style="color:#dc2626;">A</strong> = away (unavailable, counts as 19)</div>
+      <div>W-L = wins-losses · Pts = points for–against</div>
     </div>
   \`);
 }
