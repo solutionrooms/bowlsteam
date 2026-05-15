@@ -290,6 +290,7 @@ function route() {
   if (hash === '/squad') return viewSquad();
   if (hash === '/ratings') return viewRatings();
   if (hash === '/fixtures') return viewFixtures();
+  if (hash === '/rules') return viewRules();
   if (hash === '/season') return viewSeason();
   if ((params = m('/fixture/:id'))) return viewFixture(params[0]);
   if ((params = m('/player/:id'))) return viewPlayer(params[0]);
@@ -664,6 +665,7 @@ async function viewDashboard() {
       <a onclick="navigate('/fixtures')">Fixtures</a>
       <a onclick="navigate('/ratings')">Ratings</a>
       <a onclick="navigate('/squad')">Squad</a>
+      <a onclick="navigate('/rules')">Rules</a>
     </div>
   \`);
 }
@@ -897,18 +899,21 @@ async function viewRatings() {
   if (!state.seasonId) { navigate('/'); return; }
   const ratings = await api('/ratings?season_id=' + state.seasonId);
 
-  const rows = ratings.map((r, i) => \`
+  const cores = ratings.filter(r => !r.is_reserve);
+  const reserves = ratings.filter(r => r.is_reserve);
+
+  const makeRow = (r, i) => \`
     <tr onclick="navigate('/player/\${r.player_id}')" style="cursor:pointer;">
       <td>\${i + 1}</td>
-      <td>
-        \${r.name}
-        \${r.is_reserve ? '<span class="badge badge-reserve">R</span>' : ''}
-      </td>
+      <td>\${r.name}</td>
       <td style="font-weight:600;">\${r.rating.toFixed(1)}</td>
       <td class="text-sm text-muted">\${fmtRecent(r)}</td>
       <td class="text-sm text-muted">\${r.games_played}</td>
     </tr>
-  \`).join('');
+  \`;
+
+  const coreRows = cores.map(makeRow).join('');
+  const reserveRows = reserves.map(makeRow).join('');
 
   render(\`
     <a class="back" onclick="navigate('/')">&larr; Home</a>
@@ -916,11 +921,29 @@ async function viewRatings() {
       <h1>Ratings</h1>
       <button class="copy-btn" onclick="copyRatings()">Copy</button>
     </div>
-    <div class="card" style="overflow-x:auto;">
-      <table>
-        <thead><tr><th>#</th><th>Player</th><th>Avg</th><th>Recent</th><th>P</th></tr></thead>
-        <tbody>\${rows}</tbody>
-      </table>
+    \${cores.length ? \`
+      <div class="card" style="overflow-x:auto;">
+        <h3>Core (\${cores.length})</h3>
+        <table>
+          <thead><tr><th>#</th><th>Player</th><th>Avg</th><th>Recent</th><th>P</th></tr></thead>
+          <tbody>\${coreRows}</tbody>
+        </table>
+      </div>
+    \` : ''}
+    \${reserves.length ? \`
+      <div class="card" style="overflow-x:auto;">
+        <h3>Reserves (\${reserves.length})</h3>
+        <table>
+          <thead><tr><th>#</th><th>Player</th><th>Avg</th><th>Recent</th><th>P</th></tr></thead>
+          <tbody>\${reserveRows}</tbody>
+        </table>
+      </div>
+    \` : ''}
+    <div class="card text-sm text-muted">
+      <strong>Key:</strong>
+      <span style="margin-left:8px;"><strong style="color:#7c3aed;">R</strong> = reserve week (available but not selected, counts as 20)</span><br>
+      <span style="margin-left:48px;"><strong style="color:#dc2626;">A</strong> = away (unavailable, counts as 19)</span><br>
+      <span style="margin-left:48px;">P = games played</span>
     </div>
   \`);
 }
@@ -944,8 +967,14 @@ async function viewPlayer(playerId) {
     let status = '-';
     let statusClass = 'text-muted';
     if (t.entry_type === 'played') { status = 'Played'; statusClass = ''; }
-    else if (t.entry_type === 'reserve') { status = 'Reserve'; statusClass = 'badge badge-reserve'; }
-    else if (t.entry_type === 'away') { status = 'Away'; statusClass = ''; }
+    else if (t.entry_type === 'reserve') { status = '<strong style="color:#7c3aed;">R</strong>eserve'; statusClass = ''; }
+    else if (t.entry_type === 'away') { status = '<strong style="color:#dc2626;">A</strong>way'; statusClass = ''; }
+    // Show toggle button to flip R<->A for the captain when player didn't play
+    if (isCaptain() && (t.entry_type === 'reserve' || t.entry_type === 'away')) {
+      const target = t.entry_type === 'reserve' ? 'A' : 'R';
+      const newAvail = t.entry_type === 'reserve' ? 0 : 1;
+      status += ' <button class="btn-sm btn-outline" style="padding:2px 6px;font-size:0.7rem;margin-left:4px;" onclick="event.stopPropagation();toggleRA(' + t.fixture_id + ',' + playerId + ',' + newAvail + ')">→ ' + target + '</button>';
+    }
 
     let resultHtml = '-';
     let resultClass = '';
@@ -1039,6 +1068,69 @@ async function viewSquad() {
       <h3>Reserves (\${reserves.length})</h3>
       \${reserves.map(makeRow).join('') || '<div class="empty">None</div>'}
     </div>
+  \`);
+}
+
+async function viewRules() {
+  let cfg = null;
+  if (state.seasonId) {
+    try { cfg = await api('/seasons/' + state.seasonId + '/config'); } catch (e) {}
+  }
+  const pickCount = cfg ? cfg.pick_count : 8;
+  const window = cfg ? cfg.rating_window : 4;
+  const rScore = cfg ? cfg.reserve_score : 20;
+  const aScore = cfg ? cfg.away_score : 19;
+  const defaultRating = cfg ? cfg.default_rating : 15;
+
+  render(\`
+    <a class="back" onclick="navigate('/')">&larr; Home</a>
+    <h1>Selection Rules</h1>
+
+    <div class="card">
+      <h3>How the team is chosen</h3>
+      <p class="text-sm" style="line-height:1.5;margin-bottom:8px;">
+        Each week we pick <strong>\${pickCount}</strong> players from those marked available.
+      </p>
+      <ol class="text-sm" style="line-height:1.6;padding-left:20px;">
+        <li><strong>Core players first.</strong> If a core player is available, they always play. Reserves only fill in when there aren't enough cores available.</li>
+        <li><strong>Sorted by form.</strong> Within core (and within reserves), players are picked in order of rating — highest first.</li>
+        <li><strong>Ties broken by name order</strong> (alphabetical fallback).</li>
+      </ol>
+    </div>
+
+    <div class="card">
+      <h3>How the rating works</h3>
+      <p class="text-sm" style="line-height:1.5;margin-bottom:8px;">
+        Each player's rating is the average of their last <strong>\${window}</strong> weeks.
+        Each completed fixture contributes one score per player:
+      </p>
+      <ul class="text-sm" style="line-height:1.6;padding-left:20px;">
+        <li><strong>Played</strong> → their actual score (0–\${cfg ? cfg.max_score : 21})</li>
+        <li><strong style="color:#7c3aed;">R</strong> (Reserve) → <strong>\${rScore}</strong> (available, not selected)</li>
+        <li><strong style="color:#dc2626;">A</strong> (Away) → <strong>\${aScore}</strong> (unavailable)</li>
+      </ul>
+      <p class="text-sm text-muted mt-8">
+        New players start with a default rating of <strong>\${defaultRating}</strong> until they have a result.
+      </p>
+    </div>
+
+    <div class="card">
+      <h3>What can the captain change?</h3>
+      <ul class="text-sm" style="line-height:1.6;padding-left:20px;">
+        <li>Toggle availability for any upcoming fixture</li>
+        <li>Run / re-run selection</li>
+        <li>Enter or edit results</li>
+        <li>Add / remove players, change core ↔ reserve</li>
+        <li>Flip <strong style="color:#7c3aed;">R</strong> ↔ <strong style="color:#dc2626;">A</strong> on a player's timeline (after results too)</li>
+        <li>Adjust all parameters in season Settings</li>
+      </ul>
+    </div>
+
+    \${isCaptain() ? \`
+      <div class="card">
+        <p class="text-sm text-muted">Numbers above are pulled from your current season's settings. To change them, go to <a onclick="navigate('/season')">Manage</a> → Settings.</p>
+      </div>
+    \` : ''}
   \`);
 }
 
@@ -1250,6 +1342,14 @@ async function addPlayer() {
   viewSquad();
 }
 
+async function toggleRA(fixtureId, playerId, isAvailable) {
+  await api('/fixtures/' + fixtureId + '/availability', {
+    method: 'PUT',
+    body: { players: [{ player_id: playerId, is_available: isAvailable }] },
+  });
+  viewPlayer(playerId);
+}
+
 async function toggleReserve(playerId, isReserve) {
   await api('/players/' + playerId, { method: 'PUT', body: { is_reserve: isReserve } });
   viewSquad();
@@ -1366,8 +1466,8 @@ function fmtRecent(r) {
     return r.recent_scores && r.recent_scores.length ? r.recent_scores.join(', ') : '-';
   }
   return r.recent_entries.map(e => {
-    if (e.type === 'reserve') return 'R';
-    if (e.type === 'away') return 'A';
+    if (e.type === 'reserve') return '<strong style="color:#7c3aed;">R</strong>';
+    if (e.type === 'away') return '<strong style="color:#dc2626;">A</strong>';
     return e.score;
   }).join(', ');
 }
