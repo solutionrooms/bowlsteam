@@ -42,7 +42,10 @@ CREATE TABLE IF NOT EXISTS season_config (
     drop_enabled INTEGER NOT NULL DEFAULT 1,
     drop_count INTEGER NOT NULL DEFAULT 1,
     drop_duration INTEGER NOT NULL DEFAULT 1,
-    drop_carry_over INTEGER NOT NULL DEFAULT 0
+    drop_carry_over INTEGER NOT NULL DEFAULT 0,
+    difficulty_weight REAL NOT NULL DEFAULT 1.0,
+    win_bonus_cap REAL NOT NULL DEFAULT 1.0,
+    loss_penalty_cap REAL NOT NULL DEFAULT 1.0
 );
 
 CREATE TABLE IF NOT EXISTS fixtures (
@@ -53,6 +56,7 @@ CREATE TABLE IF NOT EXISTS fixtures (
     opponent TEXT NOT NULL,
     venue TEXT NOT NULL CHECK (venue IN ('Home', 'Away')),
     status TEXT NOT NULL DEFAULT 'upcoming' CHECK (status IN ('upcoming', 'completed')),
+    match_url TEXT,
     UNIQUE(season_id, week_number)
 );
 
@@ -89,6 +93,9 @@ CREATE TABLE IF NOT EXISTS results (
     player_id INTEGER NOT NULL REFERENCES players(id),
     player_score INTEGER NOT NULL CHECK (player_score >= 0),
     opponent_score INTEGER NOT NULL CHECK (opponent_score >= 0),
+    opponent_name TEXT,
+    opponent_url TEXT,
+    opponent_difficulty REAL,
     UNIQUE(fixture_id, player_id)
 );
 

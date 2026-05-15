@@ -7,7 +7,7 @@ export function renderHtml() {
   <title>BowlSteam</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, system-ui, sans-serif; max-width: 540px; margin: 0 auto; padding: 12px; background: #f0f2f5; color: #1a1a1a; }
+    body { font-family: -apple-system, system-ui, sans-serif; max-width: 1100px; margin: 0 auto; padding: 12px; background: #f0f2f5; color: #1a1a1a; }
     h1 { font-size: 1.4rem; margin-bottom: 12px; }
     h2 { font-size: 1.15rem; margin-bottom: 10px; color: #333; }
     h3 { font-size: 1rem; margin-bottom: 8px; color: #555; }
@@ -866,7 +866,10 @@ async function viewFixture(fixtureId) {
       <div class="card">
         <div class="flex-between mb-8">
           <h3>Results</h3>
-          \${isCaptain() ? \`<button class="btn-sm btn-outline" onclick="toggleEditResults(\${fixtureId})">Edit</button>\` : ''}
+          \${isCaptain() ? \`<div style="display:flex;gap:4px;">
+            <button class="btn-sm btn-outline" onclick="importMatchResults(\${fixtureId})">Re-import</button>
+            <button class="btn-sm btn-outline" onclick="toggleEditResults(\${fixtureId})">Edit</button>
+          </div>\` : ''}
         </div>
         <div id="results-view">
           \${resRows}
@@ -922,11 +925,16 @@ async function viewFixture(fixtureId) {
     </div>
 
     <div class="card">
-      <div class="flex-between mb-8">
-        <h3>Availability</h3>
-        \${isCaptain() ? \`<button class="btn-sm btn-primary" onclick="saveAvailability(\${fixtureId})">Save</button>\` : ''}
-      </div>
-      \${availRows}
+      <details>
+        <summary style="cursor:pointer;font-weight:600;font-size:1.1rem;display:flex;justify-content:space-between;align-items:center;">
+          <span>Availability</span>
+          <span class="text-sm text-muted" style="font-weight:400;">\${players.filter(p => (availMap[p.id] !== undefined ? availMap[p.id] : 1)).length}/\${players.length} available</span>
+        </summary>
+        <div class="mt-12">
+          \${isCaptain() ? \`<div style="text-align:right;margin-bottom:8px;"><button class="btn-sm btn-primary" onclick="saveAvailability(\${fixtureId})">Save</button></div>\` : ''}
+          \${availRows}
+        </div>
+      </details>
     </div>
 
     \${isCaptain() && !hasSelection && fixture.status === 'upcoming' ? \`
@@ -959,11 +967,12 @@ async function viewRatings() {
     return \`
     <tr onclick="navigate('/player/\${r.player_id}')" style="cursor:pointer;">
       <td>\${i + 1}</td>
-      <td>\${r.name}</td>
+      <td style="white-space:nowrap;">\${r.name}</td>
       <td style="font-weight:600;">\${r.rating.toFixed(1)}</td>
       <td class="text-sm" style="white-space:nowrap;">\${record}</td>
       <td class="text-sm text-muted" style="white-space:nowrap;">\${points}</td>
-      <td class="text-sm text-muted">\${fmtRecent(r)}</td>
+      \${recentScoreCells(r)}
+      \${recentBonusCells(r)}
     </tr>
   \`;};
 
@@ -993,7 +1002,21 @@ async function viewRatings() {
       <div class="card" style="overflow-x:auto;">
         <h3>Core (\${cores.length})</h3>
         <table>
-          <thead><tr><th>#</th><th>Player</th><th>Avg</th><th>W-L</th><th>Pts</th><th>Recent</th></tr></thead>
+          <thead>
+            <tr style="white-space:nowrap;">
+              <th rowspan="2">#</th>
+              <th rowspan="2">Player</th>
+              <th rowspan="2">Avg+diff</th>
+              <th rowspan="2">W-L</th>
+              <th rowspan="2">Pts</th>
+              <th colspan="4" style="border-left:1px solid #ddd;text-align:center;">Last 4 scores</th>
+              <th colspan="4" style="border-left:1px solid #ddd;text-align:center;">Last 4 difficulty bonus</th>
+            </tr>
+            <tr style="white-space:nowrap;font-size:0.7rem;color:#888;text-align:center;">
+              <th style="border-left:1px solid #ddd;text-align:center;">-3</th><th style="text-align:center;">-2</th><th style="text-align:center;">-1</th><th style="text-align:center;">last</th>
+              <th style="border-left:1px solid #ddd;text-align:center;">-3</th><th style="text-align:center;">-2</th><th style="text-align:center;">-1</th><th style="text-align:center;">last</th>
+            </tr>
+          </thead>
           <tbody>\${coreRows}</tbody>
         </table>
       </div>
@@ -1002,7 +1025,21 @@ async function viewRatings() {
       <div class="card" style="overflow-x:auto;">
         <h3>Reserves (\${reserves.length})</h3>
         <table>
-          <thead><tr><th>#</th><th>Player</th><th>Avg</th><th>W-L</th><th>Pts</th><th>Recent</th></tr></thead>
+          <thead>
+            <tr style="white-space:nowrap;">
+              <th rowspan="2">#</th>
+              <th rowspan="2">Player</th>
+              <th rowspan="2">Avg+diff</th>
+              <th rowspan="2">W-L</th>
+              <th rowspan="2">Pts</th>
+              <th colspan="4" style="border-left:1px solid #ddd;text-align:center;">Last 4 scores</th>
+              <th colspan="4" style="border-left:1px solid #ddd;text-align:center;">Last 4 difficulty bonus</th>
+            </tr>
+            <tr style="white-space:nowrap;font-size:0.7rem;color:#888;text-align:center;">
+              <th style="border-left:1px solid #ddd;text-align:center;">-3</th><th style="text-align:center;">-2</th><th style="text-align:center;">-1</th><th style="text-align:center;">last</th>
+              <th style="border-left:1px solid #ddd;text-align:center;">-3</th><th style="text-align:center;">-2</th><th style="text-align:center;">-1</th><th style="text-align:center;">last</th>
+            </tr>
+          </thead>
           <tbody>\${reserveRows}</tbody>
         </table>
       </div>
@@ -1012,6 +1049,7 @@ async function viewRatings() {
       <div style="margin-top:4px;"><strong style="color:#7c3aed;">R</strong> = reserve week (available but not selected, counts as 20)</div>
       <div><strong style="color:#dc2626;">A</strong> = away (unavailable, counts as 19)</div>
       <div>W-L = wins-losses · Pts = points for–against</div>
+      <div>Avg includes a difficulty bonus (opponent strength) — see <a onclick="navigate('/rules')" style="cursor:pointer;text-decoration:underline;">Selection Rules</a>.</div>
     </div>
   \`);
 }
@@ -1050,11 +1088,27 @@ async function viewPlayer(playerId) {
       const won = t.result.player_score > t.result.opp_score;
       resultClass = won ? 'win' : 'loss';
       resultHtml = t.result.player_score + '-' + t.result.opp_score;
+      if (t.opponent_name) {
+        resultHtml += '<div class="text-sm text-muted" style="font-weight:400;">vs ' + esc(t.opponent_name) + '</div>';
+      }
     }
 
     const recent = t.recent_scores && t.recent_scores.length
       ? t.recent_scores.map(s => Number.isInteger(s) ? s : s.toFixed(0)).join(',')
       : '-';
+
+    let bonusHtml = '-';
+    if (t.entry_type === 'played') {
+      if (t.difficulty_bonus === null || t.difficulty_bonus === undefined) {
+        bonusHtml = '<span class="text-muted">—</span>';
+      } else if (t.difficulty_bonus === 0) {
+        bonusHtml = '<span class="text-muted">0</span>';
+      } else {
+        const sign = t.difficulty_bonus > 0 ? '+' : '';
+        const cls = t.difficulty_bonus > 0 ? 'win' : 'loss';
+        bonusHtml = '<span class="' + cls + '">' + sign + t.difficulty_bonus.toFixed(2) + '</span>';
+      }
+    }
 
     return \`
       <tr>
@@ -1064,6 +1118,7 @@ async function viewPlayer(playerId) {
         <td class="text-sm" style="text-align:center;">\${avail}</td>
         <td class="text-sm \${statusClass}">\${status}</td>
         <td class="text-sm \${resultClass}">\${resultHtml}</td>
+        <td class="text-sm">\${bonusHtml}</td>
         <td class="text-sm" style="font-weight:600;">\${t.rating_after != null ? t.rating_after.toFixed(1) : '-'}</td>
         <td class="text-sm text-muted">\${recent}</td>
       </tr>
@@ -1077,17 +1132,26 @@ async function viewPlayer(playerId) {
       \${rating ? \`
         <div class="mt-8">
           <span style="font-size:1.3rem;font-weight:700;">\${rating.rating.toFixed(1)}</span>
-          <span class="text-sm text-muted"> avg</span>
+          <span class="text-sm text-muted"> avg+diff</span>
           <span class="text-sm text-muted" style="margin-left:12px;">\${rating.games_played} \${rating.games_played === 1 ? 'game' : 'games'}</span>
         </div>
-        \${rating.recent_entries && rating.recent_entries.length ? \`<div class="text-sm text-muted mt-8">Recent: \${fmtRecent(rating)}</div>\` : ''}
+        \${rating.games_played > 0 ? \`
+          <div class="text-sm mt-8">
+            <span class="win">\${rating.wins}W</span> &ndash; <span class="loss">\${rating.losses}L</span>
+            <span class="text-muted" style="margin-left:12px;">Pts: \${rating.points_for}&ndash;\${rating.points_against}</span>
+          </div>
+        \` : ''}
+        \${rating.recent_entries && rating.recent_entries.length ? \`
+          <div class="text-sm text-muted mt-8">Last 4 scores: \${fmtRecent(rating)}</div>
+          <div class="text-sm text-muted mt-8">Last 4 difficulty bonus: \${fmtRecentBonuses(rating)}</div>
+        \` : ''}
       \` : ''}
     </div>
     <div class="card" style="overflow-x:auto;">
       <h3>Season Timeline</h3>
       \${timeline.length ? \`
         <table>
-          <thead><tr><th>Date</th><th>vs</th><th>V</th><th>Avail</th><th>Status</th><th>Result</th><th>Avg</th><th>Recent</th></tr></thead>
+          <thead><tr><th>Date</th><th>vs</th><th>V</th><th>Avail</th><th>Status</th><th>Result</th><th>Bonus</th><th>Avg+diff</th><th>Last 4 scores</th></tr></thead>
           <tbody>\${rows}</tbody>
         </table>
       \` : '<div class="empty">No fixtures yet</div>'}
@@ -1149,6 +1213,10 @@ async function viewRules() {
   const rScore = cfg ? cfg.reserve_score : 20;
   const aScore = cfg ? cfg.away_score : 19;
   const defaultRating = cfg ? cfg.default_rating : 15;
+  const alpha = cfg && cfg.difficulty_weight !== undefined && cfg.difficulty_weight !== null ? cfg.difficulty_weight : 1;
+  const winCap = cfg && cfg.win_bonus_cap !== undefined && cfg.win_bonus_cap !== null ? cfg.win_bonus_cap : 1;
+  const lossCap = cfg && cfg.loss_penalty_cap !== undefined && cfg.loss_penalty_cap !== null ? cfg.loss_penalty_cap : 1;
+  const maxScore = cfg && cfg.max_score !== undefined && cfg.max_score !== null ? cfg.max_score : 21;
 
   render(\`
     <a class="back" onclick="navigate('/')">&larr; Home</a>
@@ -1162,7 +1230,6 @@ async function viewRules() {
       <ol class="text-sm" style="line-height:1.6;padding-left:20px;">
         <li><strong>Core players first.</strong> If a core player is available, they always play. Reserves only fill in when there aren't enough cores available.</li>
         <li><strong>Sorted by form.</strong> Within core (and within reserves), players are picked in order of rating — highest first.</li>
-        <li><strong>Ties broken by name order</strong> (alphabetical fallback).</li>
       </ol>
     </div>
 
@@ -1173,12 +1240,60 @@ async function viewRules() {
         Each completed fixture contributes one score per player:
       </p>
       <ul class="text-sm" style="line-height:1.6;padding-left:20px;">
-        <li><strong>Played</strong> → their actual score (0–\${cfg ? cfg.max_score : 21})</li>
+        <li><strong>Played</strong> → their actual score (0–\${cfg ? cfg.max_score : 21}) <strong>+ difficulty bonus</strong> (see below)</li>
         <li><strong style="color:#7c3aed;">R</strong> (Reserve) → <strong>\${rScore}</strong> (available, not selected)</li>
         <li><strong style="color:#dc2626;">A</strong> (Away) → <strong>\${aScore}</strong> (unavailable)</li>
       </ul>
       <p class="text-sm text-muted mt-8">
         New players start with a default rating of <strong>\${defaultRating}</strong> until they have a result.
+      </p>
+    </div>
+
+    <div class="card">
+      <h3>Difficulty bonus &nbsp;<span class="text-sm text-muted" style="font-weight:400;">(α = \${alpha}, win cap = +\${winCap}, loss cap = −\${lossCap})</span></h3>
+      <p class="text-sm" style="line-height:1.5;margin-bottom:8px;">
+        Not all opponents are equal. We use the opponent's <strong>avg net chalks per game before this match</strong> as the difficulty signal (<code>opp_diff</code>).
+        Each played score gets a bonus added to the raw chalks before averaging.
+      </p>
+
+      <h4 style="margin-top:12px;">Rules:</h4>
+      <ol class="text-sm" style="line-height:1.7;padding-left:20px;">
+        <li><strong>Raw bonus = α × opp_diff.</strong> Strong opp gives positive credit, weak opp gives a negative dock — whether you won or lost.</li>
+        <li><strong>Positive cap on WINS only:</strong> if you won, the positive bonus is clamped to at most <strong>+\${winCap}</strong>. On losses, positive bonus is uncapped (only rule 4 limits it).</li>
+        <li><strong>Negative cap:</strong> any negative bonus is clamped to at least <strong>−\${lossCap}</strong> (regardless of W/L).</li>
+        <li><strong>Score bounds:</strong> effective score is bounded to <strong>[0, \${maxScore + winCap}]</strong> on wins (so a 21-X win can take a +\${winCap} bonus → max \${maxScore + winCap}) and <strong>[0, \${maxScore}]</strong> on losses (a loss can never beat a winning effective score).</li>
+      </ol>
+
+      <h4 style="margin-top:12px;">Examples (with current α = \${alpha}, win cap = \${winCap}, loss cap = \${lossCap}):</h4>
+      <p class="text-sm text-muted mt-8">
+        <em>A — win 21-X vs strong opp (raw 21, opp_diff +6):</em>
+        raw_bonus = \${alpha} × 6 = \${(alpha * 6).toFixed(2)} → rule 2 caps at +\${winCap}. Win ceiling is \${maxScore + winCap}, so the +\${winCap} fits.
+        Effective = <strong>\${(21 + winCap).toFixed(2)}</strong>.
+      </p>
+      <p class="text-sm text-muted mt-8">
+        <em>B — win vs weak opp (raw 21, opp_diff −13):</em>
+        raw_bonus = \${alpha} × (−13) = \${(alpha * -13).toFixed(2)} → rule 3 caps at −\${lossCap}.
+        Effective = <strong>\${(21 - lossCap).toFixed(2)}</strong>.
+      </p>
+      <p class="text-sm text-muted mt-8">
+        <em>C — loss vs strong opp (raw 10, opp_diff +6):</em>
+        raw_bonus = \${alpha} × 6 = <strong>+\${(alpha * 6).toFixed(2)}</strong> (no positive cap on losses).
+        Effective = <strong>\${Math.min(10 + alpha * 6, maxScore).toFixed(2)}</strong>.
+      </p>
+      <p class="text-sm text-muted mt-8">
+        <em>D — close loss vs very strong opp (raw 20, opp_diff +10):</em>
+        raw_bonus = \${alpha} × 10 = \${(alpha * 10).toFixed(2)}; rule 4 ceiling limits effective to \${maxScore} → bonus = <strong>+\${(maxScore - 20).toFixed(2)}</strong>.
+        Effective = <strong>\${maxScore}</strong>.
+      </p>
+      <p class="text-sm text-muted mt-8">
+        <em>E — loss vs weak opp (raw 5, opp_diff −10):</em>
+        raw_bonus = \${alpha} × (−10) = \${(alpha * -10).toFixed(2)} → rule 3 caps at −\${lossCap}.
+        Effective = <strong>\${Math.max(5 - lossCap, 0).toFixed(2)}</strong>.
+      </p>
+      <p class="text-sm text-muted mt-8">
+        <em>F — loss vs weak opp at raw 0 (opp_diff −10):</em>
+        raw_bonus → −\${lossCap}, but rule 4 floors at 0 → bonus = <strong>0</strong>.
+        Effective = <strong>0</strong>.
       </p>
     </div>
 
@@ -1270,7 +1385,7 @@ async function viewSettings(seasonId) {
   const field = (label, key, type = 'number') => \`
     <div class="config-row">
       <label>\${label}</label>
-      <input type="\${type}" id="cfg-\${key}" value="\${config[key]}" \${type === 'number' ? 'min="0"' : ''}>
+      <input type="\${type}" id="cfg-\${key}" value="\${config[key]}" \${type === 'number' ? 'min="0" step="any"' : ''}>
     </div>
   \`;
 
@@ -1303,6 +1418,23 @@ async function viewSettings(seasonId) {
       \${field('Reserve score', 'reserve_score')}
       \${field('Away score', 'away_score')}
       <p class="text-sm text-muted mt-8">Reserve = available but not picked. Away = unavailable. These fill in gaps in the rolling average.</p>
+    </div>
+
+    <div class="card">
+      <h3>Difficulty Bonus</h3>
+      \${field('Difficulty weight (α)', 'difficulty_weight')}
+      \${field('Win bonus cap (max + bonus when you win)', 'win_bonus_cap')}
+      \${field('Loss penalty cap (max − bonus when you lose)', 'loss_penalty_cap')}
+      <p class="text-sm text-muted mt-8">
+        Bonus rewards playing strong opponents and penalises easy losses. Caps prevent extreme single-game swings.
+        Set α = 0 to disable bonuses entirely.
+      </p>
+      <button class="btn-outline" onclick="computeDifficulty(\${seasonId}, false)">Compute opponent difficulties</button>
+      <button class="btn-outline" onclick="computeDifficulty(\${seasonId}, true)" style="margin-left:6px;">Recompute (force)</button>
+      <p class="text-sm text-muted mt-8">
+        For fixtures imported via "Import results" we already have opponent player URLs.
+        For older fixtures, re-run "Import results" once and we'll save the URL — then click Compute.
+      </p>
     </div>
 
     <div class="card">
@@ -1352,13 +1484,13 @@ async function importMatchResults(fixtureId) {
     data = await api('/fixtures/' + fixtureId + '/import-results-preview', { method: 'POST', body: { url } });
   } catch (e) { return; }
 
-  // Re-render score entry rows in the imported order, prefilled
-  const container = document.getElementById('score-entry-rows');
-  if (!container) return;
-  const rows = data.rows.map(r => {
-    const label = r.player_id ? r.name : (r.name + ' (no match)');
+  // The preview also saved match_url + opponent info server-side. Now populate whichever
+  // input panel is visible (entry rows for upcoming, edit rows for completed).
+  const entryContainer = document.getElementById('score-entry-rows');
+  const editContainer = document.getElementById('results-edit');
+  const buildRow = (r) => {
     if (!r.player_id) {
-      return '<div class="score-row"><span class="name" style="color:#999;">' + label + '</span><span class="text-sm text-muted">skipped</span></div>';
+      return '<div class="score-row"><span class="name" style="color:#999;">' + r.name + ' (no match)</span><span class="text-sm text-muted">skipped</span></div>';
     }
     return '<div class="score-row" data-row-player="' + r.player_id + '">' +
       '<span class="name">' + r.name + '</span>' +
@@ -1366,11 +1498,24 @@ async function importMatchResults(fixtureId) {
       '<span class="vs">-</span>' +
       '<input type="number" min="0" max="' + config.max_score + '" data-result-player="' + r.player_id + '" data-field="opponent_score" value="' + r.opp_score + '">' +
       '</div>';
-  }).join('');
-  container.innerHTML = rows;
+  };
+  const rowsHtml = data.rows.map(buildRow).join('');
+
+  if (entryContainer) {
+    entryContainer.innerHTML = rowsHtml;
+  } else if (editContainer) {
+    // Completed fixture: replace edit rows and reveal the edit panel so user can confirm.
+    const inputs = editContainer.querySelectorAll('.score-row');
+    inputs.forEach(n => n.remove());
+    editContainer.insertAdjacentHTML('afterbegin', rowsHtml);
+    const view = document.getElementById('results-view');
+    if (view) view.style.display = 'none';
+    editContainer.style.display = 'block';
+  }
+
   const unmatched = data.rows.filter(r => !r.player_id).length;
-  if (unmatched > 0) showToast(unmatched + ' player(s) not matched — check names', true);
-  else showToast('Imported ' + data.rows.length + ' results');
+  if (unmatched > 0) showToast(unmatched + ' player(s) not matched — check names. Click Save to confirm.', true);
+  else showToast('Imported ' + data.rows.length + ' results. Match URL saved. Click Save to confirm.');
 }
 
 async function submitResults(fixtureId) {
@@ -1447,7 +1592,7 @@ async function syncFixtures() {
 }
 
 async function saveConfig(seasonId) {
-  const fields = ['squad_size', 'reserve_count', 'pick_count', 'max_score', 'rating_window', 'default_rating', 'reserve_score', 'away_score', 'drop_count', 'drop_duration'];
+  const fields = ['squad_size', 'reserve_count', 'pick_count', 'max_score', 'rating_window', 'default_rating', 'reserve_score', 'away_score', 'drop_count', 'drop_duration', 'difficulty_weight', 'win_bonus_cap', 'loss_penalty_cap'];
   const toggles = ['drop_enabled', 'drop_carry_over'];
   const body = {};
   for (const f of fields) {
@@ -1460,6 +1605,27 @@ async function saveConfig(seasonId) {
   }
   await api('/seasons/' + seasonId + '/config', { method: 'PUT', body });
   showToast('Settings saved');
+}
+
+async function computeDifficulty(seasonId, force) {
+  showToast('Fetching opponent histories...');
+  try {
+    const r = await api('/seasons/' + seasonId + '/compute-difficulty', { method: 'POST', body: { force: !!force } });
+    const parts = [];
+    if (r.scraped_fixtures) parts.push(r.scraped_fixtures + ' fixture' + (r.scraped_fixtures === 1 ? '' : 's') + ' rescraped');
+    parts.push(r.computed + ' opponent diff' + (r.computed === 1 ? '' : 's') + ' computed');
+    if (r.priorless) parts.push(r.priorless + ' opponent' + (r.priorless === 1 ? '' : 's') + ' had no prior games');
+    if (r.fixtures_missing_url && r.fixtures_missing_url.length) {
+      parts.push(r.fixtures_missing_url.length + ' fixture' + (r.fixtures_missing_url.length === 1 ? '' : 's') + ' still missing match URL — re-import them');
+    }
+    if ((r.scrape_failures && r.scrape_failures.length) || (r.fetch_failures && r.fetch_failures.length)) {
+      const fails = (r.scrape_failures || []).length + (r.fetch_failures || []).length;
+      parts.push(fails + ' fetch error' + (fails === 1 ? '' : 's'));
+    }
+    showToast(parts.join(' · '));
+  } catch (e) {
+    showToast('Error: ' + e.message);
+  }
 }
 
 // --- Copy to clipboard ---
@@ -1508,17 +1674,73 @@ async function copySelection(fixtureId) {
 
 async function copyRatings() {
   const ratings = await api('/ratings?season_id=' + state.seasonId);
-  let text = 'RATINGS\\n\\n';
-  text += '#  Player            Avg   Recent\\n';
-  ratings.forEach((r, i) => {
+  const cores = ratings.filter(r => !r.is_reserve);
+  const totW = cores.reduce((s, r) => s + (r.wins || 0), 0);
+  const totL = cores.reduce((s, r) => s + (r.losses || 0), 0);
+  const totPF = cores.reduce((s, r) => s + (r.points_for || 0), 0);
+  const totPA = cores.reduce((s, r) => s + (r.points_against || 0), 0);
+
+  const team = state.teams && state.teams.find(t => t.id === state.teamId);
+  const teamName = team ? team.name : (state.clubName || 'Ratings');
+  const today = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+
+  const nameWidth = Math.min(16, Math.max(...cores.map(r => r.name.length), 6));
+
+  // Last 4 cells, padded to 4 with leading blanks. Newest is rightmost (chronological).
+  const scoreCells = (r) => {
+    const entries = (r.recent_entries || []).slice().reverse();
+    const pad = Math.max(0, 4 - entries.length);
+    const items = [];
+    for (let i = 0; i < pad; i++) items.push(null);
+    for (const e of entries) items.push(e);
+    return items.map(e => {
+      if (e === null) return '  ';
+      if (e.type === 'reserve') return ' R';
+      if (e.type === 'away') return ' A';
+      return String(e.raw_score !== undefined ? e.raw_score : e.score).padStart(2);
+    }).join(' ');
+  };
+  const bonusCells = (r) => {
+    const entries = (r.recent_entries || []).slice().reverse();
+    const pad = Math.max(0, 4 - entries.length);
+    const items = [];
+    for (let i = 0; i < pad; i++) items.push(null);
+    for (const e of entries) items.push(e);
+    return items.map(e => {
+      if (e === null) return '    ';
+      if (e.type !== 'played' || e.difficulty === null || e.difficulty === undefined) return '   —';
+      const b = e.bonus || 0;
+      if (b === 0) return '   0';
+      const sign = b > 0 ? '+' : '';
+      return (sign + b.toFixed(1)).padStart(4);
+    }).join(' ');
+  };
+
+  // Header line widths: each cell padded to align with body.
+  const header = ' #  ' + 'Player'.padEnd(nameWidth) +
+    '  Avg+d  W-L   Pts     -3 -2 -1 last   bonus -3   -2   -1  last\\n';
+
+  let body = '';
+  cores.forEach((r, i) => {
     const num = String(i + 1).padStart(2);
-    const name = r.name.padEnd(18);
+    const name = r.name.length > nameWidth ? r.name.slice(0, nameWidth) : r.name.padEnd(nameWidth);
     const avg = r.rating.toFixed(1).padStart(5);
-    const recent = fmtRecent(r);
-    text += num + ' ' + name + avg + '  ' + recent + '\\n';
+    const rec = (r.games_played > 0 ? (r.wins + '-' + r.losses) : '-').padStart(4);
+    const pts = (r.games_played > 0 ? (r.points_for + '-' + r.points_against) : '-').padStart(6);
+    body += ' ' + num + ' ' + name + '  ' + avg + '  ' + rec + '  ' + pts +
+      '   ' + scoreCells(r) + '         ' + bonusCells(r) + '\\n';
   });
 
+  let text = '*' + teamName + ' — Ratings*\\n';
+  text += '_' + today + '_\\n\\n';
+  text += '\`\`\`\\n' + header + body + '\`\`\`';
+  if (totW + totL > 0) {
+    const diff = totPF - totPA;
+    text += '\\n_Core total: ' + totW + 'W-' + totL + 'L · pts ' + totPF + '-' + totPA + ' (' + (diff >= 0 ? '+' : '') + diff + ')_';
+  }
+
   await copyText(text);
+  showToast('Copied — paste into WhatsApp');
 }
 
 // --- Helpers ---
@@ -1536,8 +1758,61 @@ function fmtRecent(r) {
   return r.recent_entries.map(e => {
     if (e.type === 'reserve') return '<strong style="color:#7c3aed;">R</strong>';
     if (e.type === 'away') return '<strong style="color:#dc2626;">A</strong>';
-    return e.score;
+    return e.raw_score !== undefined ? e.raw_score : e.score;
   }).join(', ');
+}
+
+function fmtRecentBonuses(r) {
+  if (!r.recent_entries || r.recent_entries.length === 0) return '-';
+  return r.recent_entries.map(e => {
+    if (e.type !== 'played') return '<span class="text-muted">—</span>';
+    if (e.difficulty === null || e.difficulty === undefined) return '<span class="text-muted">—</span>';
+    const b = e.bonus || 0;
+    if (b === 0) return '0';
+    const sign = b > 0 ? '+' : '';
+    const cls = b > 0 ? 'win' : 'loss';
+    return '<span class="' + cls + '">' + sign + b.toFixed(2) + '</span>';
+  }).join(', ');
+}
+
+// Returns 4 <td> cells with the player's last 4 scores, in chronological order
+// (oldest → newest). Pads on the left when the player has fewer than 4 entries.
+function recentScoreCells(r) {
+  const entries = (r.recent_entries || []).slice().reverse();
+  const pad = Math.max(0, 4 - entries.length);
+  const items = [];
+  for (let i = 0; i < pad; i++) items.push(null);
+  for (const e of entries) items.push(e);
+  return items.map((e, i) => {
+    const border = i === 0 ? 'border-left:1px solid #ddd;' : '';
+    if (e === null) return '<td style="' + border + '"></td>';
+    let inner;
+    if (e.type === 'reserve') inner = '<strong style="color:#7c3aed;">R</strong>';
+    else if (e.type === 'away') inner = '<strong style="color:#dc2626;">A</strong>';
+    else inner = (e.raw_score !== undefined ? e.raw_score : e.score);
+    return '<td class="text-sm" style="text-align:center;' + border + '">' + inner + '</td>';
+  }).join('');
+}
+
+// Returns 4 <td> cells with the player's last 4 difficulty bonuses, chronologically.
+function recentBonusCells(r) {
+  const entries = (r.recent_entries || []).slice().reverse();
+  const pad = Math.max(0, 4 - entries.length);
+  const items = [];
+  for (let i = 0; i < pad; i++) items.push(null);
+  for (const e of entries) items.push(e);
+  return items.map((e, i) => {
+    const border = i === 0 ? 'border-left:1px solid #ddd;' : '';
+    if (e === null) return '<td style="' + border + '"></td>';
+    if (e.type !== 'played' || e.difficulty === null || e.difficulty === undefined) {
+      return '<td class="text-sm text-muted" style="text-align:center;' + border + '">—</td>';
+    }
+    const b = e.bonus || 0;
+    if (b === 0) return '<td class="text-sm text-muted" style="text-align:center;' + border + '">0</td>';
+    const sign = b > 0 ? '+' : '';
+    const cls = b > 0 ? 'win' : 'loss';
+    return '<td class="text-sm" style="text-align:center;' + border + '"><span class="' + cls + '">' + sign + b.toFixed(2) + '</span></td>';
+  }).join('');
 }
 
 function fmtDateShort(iso) {

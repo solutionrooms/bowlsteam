@@ -1,5 +1,5 @@
 import { getAllRatings, runSelection, determineDroppedPlayer } from './selection.js';
-import { scrapeAll, scrapeFixtures, scrapeMatch } from './scraper.js';
+import { scrapeAll, scrapeFixtures, scrapeMatch, scrapeOpponentDifficulty } from './scraper.js';
 
 // --- Auth helper: resolve club + role from PIN header ---
 async function getClub(request, db) {
@@ -276,7 +276,8 @@ export async function handleApi(request, env) {
         const body = await request.json();
         const fields = ['squad_size', 'reserve_count', 'pick_count', 'max_score',
           'rating_window', 'default_rating', 'reserve_score', 'away_score',
-          'drop_enabled', 'drop_count', 'drop_duration', 'drop_carry_over'];
+          'drop_enabled', 'drop_count', 'drop_duration', 'drop_carry_over',
+          'difficulty_weight', 'win_bonus_cap', 'loss_penalty_cap'];
         const sets = [];
         const vals = [];
         for (const f of fields) {
@@ -572,7 +573,12 @@ export async function handleApi(request, env) {
         player_id: byName[r.name.toLowerCase()] || null,
         our_score: r.our_score,
         opp_score: r.opp_score,
+        opponent_name: r.opponent_name || null,
+        opponent_url: r.opponent_url || null,
       }));
+
+      // Save the match URL on the fixture so we can recompute later without re-prompting.
+      await db.prepare('UPDATE fixtures SET match_url = ? WHERE id = ?').bind(matchUrl, fixtureId).run();
 
       return json({ venue: scraped.venue, rows });
     }
@@ -600,11 +606,17 @@ export async function handleApi(request, env) {
             return error(`Scores must be between 0 and ${maxScore}`, 400);
           }
           await db.prepare(`
-            INSERT INTO results (fixture_id, player_id, player_score, opponent_score)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO results (fixture_id, player_id, player_score, opponent_score, opponent_name, opponent_url)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(fixture_id, player_id) DO UPDATE
-            SET player_score = excluded.player_score, opponent_score = excluded.opponent_score
-          `).bind(fixtureId, r.player_id, r.player_score, r.opponent_score).run();
+            SET player_score = excluded.player_score,
+                opponent_score = excluded.opponent_score,
+                opponent_name = COALESCE(excluded.opponent_name, results.opponent_name),
+                opponent_url = COALESCE(excluded.opponent_url, results.opponent_url),
+                opponent_difficulty = CASE
+                  WHEN excluded.opponent_url IS NOT NULL AND excluded.opponent_url != results.opponent_url
+                  THEN NULL ELSE results.opponent_difficulty END
+          `).bind(fixtureId, r.player_id, r.player_score, r.opponent_score, r.opponent_name || null, r.opponent_url || null).run();
         }
 
         await db.prepare(
@@ -622,6 +634,108 @@ export async function handleApi(request, env) {
         `).bind(fixtureId).all();
         return json(rows.results);
       }
+    }
+
+    // --- Compute opponent difficulty ---
+    // POST /api/seasons/:id/compute-difficulty
+    // Two-phase backfill:
+    //  1. For completed fixtures with a stored match_url but no opponent_name on their results,
+    //     re-scrape the match page to fill in opponent_name/url.
+    //  2. For all results with opponent_url, scrape opponent player.php and store opponent_difficulty.
+    // If force=true in body, recompute even when opponent_difficulty is already set.
+    const computeDiffMatch = path.match(/^\/api\/seasons\/(\d+)\/compute-difficulty$/);
+    if (computeDiffMatch && method === 'POST') {
+      const seasonId = parseInt(computeDiffMatch[1]);
+      const owns = await db.prepare(
+        'SELECT s.id, s.team_id, s.year, t.name as team_name FROM seasons s JOIN teams t ON s.team_id = t.id WHERE s.id = ? AND t.club_id = ?'
+      ).bind(seasonId, clubId).first();
+      if (!owns) return error('Season not found', 404);
+
+      const body = await request.json().catch(() => ({}));
+      const force = !!body.force;
+
+      // Phase 1: re-scrape matches that have a URL but missing opponent_name on results
+      const fixturesNeedingScrape = await db.prepare(`
+        SELECT f.id, f.match_url, f.match_date
+        FROM fixtures f
+        WHERE f.season_id = ? AND f.status = 'completed' AND f.match_url IS NOT NULL
+          AND EXISTS (SELECT 1 FROM results r WHERE r.fixture_id = f.id AND r.opponent_name IS NULL)
+      `).bind(seasonId).all();
+
+      const scrapeFailures = [];
+      for (const fix of fixturesNeedingScrape.results) {
+        try {
+          const scraped = await scrapeMatch(fix.match_url, owns.team_name);
+          if (!scraped.venue) {
+            scrapeFailures.push({ fixture_id: fix.id, reason: 'team name mismatch' });
+            continue;
+          }
+          // Match scraped players to our results by name
+          const ourResults = await db.prepare(
+            'SELECT r.id, p.name FROM results r JOIN players p ON r.player_id = p.id WHERE r.fixture_id = ?'
+          ).bind(fix.id).all();
+          const byName = {};
+          for (const r of ourResults.results) byName[r.name.toLowerCase()] = r.id;
+          for (const row of scraped.rows) {
+            const resultId = byName[row.name.toLowerCase()];
+            if (!resultId) continue;
+            await db.prepare(
+              'UPDATE results SET opponent_name = ?, opponent_url = ?, opponent_difficulty = NULL WHERE id = ?'
+            ).bind(row.opponent_name || null, row.opponent_url || null, resultId).run();
+          }
+        } catch (e) {
+          scrapeFailures.push({ fixture_id: fix.id, reason: e.message });
+        }
+      }
+
+      // Phase 2: compute difficulty for any results with opponent_url that lack a stored difficulty
+      const sql = force
+        ? `SELECT r.id, r.opponent_url, f.match_date
+           FROM results r JOIN fixtures f ON r.fixture_id = f.id
+           WHERE f.season_id = ? AND r.opponent_url IS NOT NULL`
+        : `SELECT r.id, r.opponent_url, f.match_date
+           FROM results r JOIN fixtures f ON r.fixture_id = f.id
+           WHERE f.season_id = ? AND r.opponent_url IS NOT NULL AND r.opponent_difficulty IS NULL`;
+      const toCompute = await db.prepare(sql).bind(seasonId).all();
+
+      let computed = 0;
+      let priorless = 0;
+      const fetchFailures = [];
+      for (const r of toCompute.results) {
+        try {
+          const diff = await scrapeOpponentDifficulty(r.opponent_url, r.match_date, owns.year);
+          if (diff === null) {
+            // No prior games — store 0 so we don't keep re-fetching, but count separately.
+            await db.prepare('UPDATE results SET opponent_difficulty = 0 WHERE id = ?').bind(r.id).run();
+            priorless++;
+          } else {
+            await db.prepare('UPDATE results SET opponent_difficulty = ? WHERE id = ?').bind(diff.avg, r.id).run();
+            computed++;
+          }
+        } catch (e) {
+          fetchFailures.push({ result_id: r.id, reason: e.message });
+        }
+      }
+
+      // Report fixtures still missing data
+      const stillMissing = await db.prepare(`
+        SELECT f.id, f.week_number, f.opponent, f.match_date, f.match_url
+        FROM fixtures f
+        WHERE f.season_id = ? AND f.status = 'completed'
+          AND (f.match_url IS NULL OR EXISTS (
+            SELECT 1 FROM results r WHERE r.fixture_id = f.id AND r.opponent_url IS NULL
+          ))
+        ORDER BY f.week_number
+      `).bind(seasonId).all();
+
+      return json({
+        scraped_fixtures: fixturesNeedingScrape.results.length,
+        computed,
+        priorless,
+        scrape_failures: scrapeFailures,
+        fetch_failures: fetchFailures,
+        fixtures_missing_url: stillMissing.results,
+      });
     }
 
     // --- Ratings ---
@@ -666,10 +780,18 @@ export async function handleApi(request, env) {
       `).bind(seasonId).all();
 
       const pResults = await db.prepare(
-        'SELECT fixture_id, player_score, opponent_score FROM results WHERE player_id = ?'
+        'SELECT fixture_id, player_score, opponent_score, opponent_name, opponent_url, opponent_difficulty FROM results WHERE player_id = ?'
       ).bind(playerId).all();
       const resultsByFix = {};
       for (const r of pResults.results) resultsByFix[r.fixture_id] = r;
+      const alpha = config.difficulty_weight !== undefined && config.difficulty_weight !== null
+        ? config.difficulty_weight : 1.0;
+      const winCap = config.win_bonus_cap !== undefined && config.win_bonus_cap !== null
+        ? config.win_bonus_cap : Infinity;
+      const lossCap = config.loss_penalty_cap !== undefined && config.loss_penalty_cap !== null
+        ? config.loss_penalty_cap : Infinity;
+      const maxScore = config.max_score !== undefined && config.max_score !== null
+        ? config.max_score : 21;
 
       const pAvail = await db.prepare(
         'SELECT fixture_id, is_available FROM availability WHERE player_id = ?'
@@ -688,26 +810,41 @@ export async function handleApi(request, env) {
 
       for (const f of fixtures.results) {
         let entryType = null;
-        let entryScore = null;
+        let rawScore = null;
+        let bonus = 0;
+        let opponentName = null;
+        let opponentDifficulty = null;
         let result = null;
 
         if (f.status === 'completed') {
           const r = resultsByFix[f.id];
           if (r) {
             entryType = 'played';
-            entryScore = r.player_score;
+            rawScore = r.player_score;
+            opponentName = r.opponent_name || null;
+            opponentDifficulty = r.opponent_difficulty;
+            // Asymmetric + capped (matches selection.js).
+            if (opponentDifficulty !== null && opponentDifficulty !== undefined) {
+              const won = r.player_score > r.opponent_score;
+              bonus = alpha * opponentDifficulty;
+              if (bonus > 0 && won && bonus > winCap) bonus = winCap;
+              if (bonus < 0 && bonus < -lossCap) bonus = -lossCap;
+              const ceiling = won ? maxScore + winCap : maxScore;
+              if (r.player_score + bonus > ceiling) bonus = ceiling - r.player_score;
+              if (r.player_score + bonus < 0) bonus = -r.player_score;
+            }
             result = { player_score: r.player_score, opp_score: r.opponent_score };
           } else {
             const isAvail = availByFix[f.id];
             if (isAvail) {
               entryType = 'reserve';
-              entryScore = config.reserve_score;
+              rawScore = config.reserve_score;
             } else {
               entryType = 'away';
-              entryScore = config.away_score;
+              rawScore = config.away_score;
             }
           }
-          entries.push(entryScore);
+          entries.push(rawScore + bonus);
         }
 
         let ratingAfter = null;
@@ -727,7 +864,13 @@ export async function handleApi(request, env) {
           was_available: availByFix[f.id] !== undefined ? !!availByFix[f.id] : null,
           was_selected: sel ? !!sel.is_selected : null,
           entry_type: entryType,
-          entry_score: entryScore,
+          entry_score: rawScore,
+          opponent_name: opponentName,
+          opponent_difficulty: opponentDifficulty,
+          difficulty_bonus: (opponentDifficulty === null || opponentDifficulty === undefined)
+            ? null
+            : Math.round(bonus * 100) / 100,
+          effective_score: rawScore !== null ? Math.round((rawScore + bonus) * 100) / 100 : null,
           result,
           rating_after: ratingAfter !== null ? Math.round(ratingAfter * 100) / 100 : null,
           recent_scores: entries.slice(-config.rating_window),

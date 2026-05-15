@@ -37,11 +37,58 @@ export async function scrapeRoster(url) {
  * Returns players in the order they appear in the table (playing order).
  * @param {string} url - full URL to match page
  * @param {string} ourTeamName - our team name (e.g. "Westlands 1")
- * @returns {Promise<{venue:'Home'|'Away', rows: Array<{name:string, our_score:number, opp_score:number}>}>}
+ * @returns {Promise<{venue:'Home'|'Away', rows: Array<{name:string, our_score:number, opp_score:number, opponent_name:string|null, opponent_url:string|null}>}>}
  */
 export async function scrapeMatch(url, ourTeamName) {
   const html = await fetchTeamPage(url);
   return parseMatch(html, ourTeamName);
+}
+
+/**
+ * Scrape an opponent's player.php page and compute avg net chalks across games
+ * strictly before the given ISO date (YYYY-MM-DD).
+ * Returns null if no prior games (so caller can decide a neutral fallback).
+ * @param {string} url - full URL to player.php
+ * @param {string} beforeIsoDate - YYYY-MM-DD
+ * @param {number} year - season year used to resolve "21 Apr" dates
+ * @returns {Promise<{games:number, net:number, avg:number}|null>}
+ */
+export async function scrapeOpponentDifficulty(url, beforeIsoDate, year) {
+  const html = await fetchTeamPage(url);
+  return parseOpponentDifficulty(html, beforeIsoDate, year);
+}
+
+function parseOpponentDifficulty(html, beforeIsoDate, year) {
+  // Each game row in the "Games played" table has 6 cells:
+  //   date (e.g. "21 Apr") | venue | <a>team</a> | <a>opponent</a> | for | agst
+  // Cells use class B05 or B07.
+  const rowRegex = /<tr>\s*<td class=['"]B0[57]['"][^>]*>([\s\S]*?)<\/td>\s*<td class=['"]B0[57]['"][^>]*>([\s\S]*?)<\/td>\s*<td class=['"]B0[57]['"][^>]*>([\s\S]*?)<\/td>\s*<td class=['"]B0[57]['"][^>]*>([\s\S]*?)<\/td>\s*<td class=['"]B0[57]['"][^>]*>([\s\S]*?)<\/td>\s*<td class=['"]B0[57]['"][^>]*>([\s\S]*?)<\/td>\s*<\/tr>/g;
+  let games = 0;
+  let net = 0;
+  let m;
+  while ((m = rowRegex.exec(html)) !== null) {
+    const dateText = stripTags(m[1]).trim(); // e.g. "21 Apr"
+    const forScore = parseInt(stripTags(m[5]));
+    const agstScore = parseInt(stripTags(m[6]));
+    if (!dateText.match(/^\d{1,2}\s+[A-Za-z]{3}/)) continue;
+    if (!Number.isFinite(forScore) || !Number.isFinite(agstScore)) continue;
+    const iso = parseShortDate(dateText, year);
+    if (!iso) continue;
+    if (iso >= beforeIsoDate) continue;
+    games++;
+    net += forScore - agstScore;
+  }
+  if (games === 0) return null;
+  return { games, net, avg: net / games };
+}
+
+function parseShortDate(text, year) {
+  const m = text.match(/^(\d{1,2})\s+([A-Za-z]{3})/);
+  if (!m) return null;
+  const day = parseInt(m[1]);
+  const month = monthToNum(m[2]);
+  if (!month) return null;
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 }
 
 /**
@@ -189,15 +236,38 @@ function parseMatch(html, ourTeamName) {
   let m;
   while ((m = trRegex.exec(html)) !== null) {
     const homeName = stripTags(m[1]).replace(/ /g, ' ').trim();
+    const homeUrl = extractHref(m[1]);
     const homeScore = parseInt(stripTags(m[2])) || 0;
     const awayName = stripTags(m[3]).replace(/ /g, ' ').trim();
+    const awayUrl = extractHref(m[3]);
     const awayScore = parseInt(stripTags(m[4])) || 0;
     const ourName = venue === 'Home' ? homeName : awayName;
     const ourScore = venue === 'Home' ? homeScore : awayScore;
+    const oppName = venue === 'Home' ? awayName : homeName;
+    const oppUrl = venue === 'Home' ? awayUrl : homeUrl;
     const oppScore = venue === 'Home' ? awayScore : homeScore;
-    if (ourName) rows.push({ name: ourName, our_score: ourScore, opp_score: oppScore });
+    if (ourName) {
+      rows.push({
+        name: ourName,
+        our_score: ourScore,
+        opp_score: oppScore,
+        opponent_name: oppName || null,
+        opponent_url: oppUrl || null,
+      });
+    }
   }
   return { venue, rows, homeTeam, awayTeam };
+}
+
+/**
+ * Extract the href from the first <a> tag in a fragment, resolved to absolute URL.
+ */
+function extractHref(html) {
+  const m = html.match(/<a\s+href=['"]([^'"]+)['"]/i);
+  if (!m) return null;
+  let href = m[1].replace(/&amp;/g, '&');
+  if (href.startsWith('/')) href = 'https://www.cgleague.co.uk' + href;
+  return href;
 }
 
 function stripTags(s) {
