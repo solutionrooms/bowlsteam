@@ -687,14 +687,28 @@ async function viewFixtures() {
 
   const rows = fixtures.map(f => {
     const hasSel = selSets[f.id];
+    let resultLine = '';
+    if (f.status === 'completed' && (f.wins > 0 || f.losses > 0)) {
+      const won = f.wins > f.losses;
+      const drew = f.wins === f.losses;
+      const resultLabel = drew ? 'Drew' : (won ? 'Won' : 'Lost');
+      const resultClass = drew ? '' : (won ? 'win' : 'loss');
+      resultLine = \`
+        <div class="text-sm" style="margin-top:4px;">
+          <span class="\${resultClass}" style="font-weight:600;">\${resultLabel} \${f.wins}-\${f.losses}</span>
+          <span class="text-muted"> &middot; \${f.points_for}–\${f.points_against}</span>
+        </div>
+      \`;
+    }
     return \`
     <div class="card fixture-card" onclick="navigate('/fixture/\${f.id}')">
       <div class="flex-between">
-        <div>
+        <div style="flex:1;">
           <div style="font-weight:500;">vs \${f.opponent}</div>
           <div class="text-sm text-muted">\${fmtDate(f.match_date)} &middot; Week \${f.week_number}</div>
+          \${resultLine}
         </div>
-        <div style="display:flex;gap:4px;">
+        <div style="display:flex;gap:4px;flex-shrink:0;">
           <span class="badge badge-\${f.venue.toLowerCase()}">\${f.venue}</span>
           \${f.status === 'upcoming' && hasSel ? '<span class="badge badge-ready">selected</span>' : ''}
           <span class="badge badge-\${f.status}">\${f.status}</span>
@@ -703,9 +717,42 @@ async function viewFixtures() {
     </div>
   \`;}).join('');
 
+  // Season summary: matches won/lost (a match = our wins > opp wins), and games W-L total
+  const completed = fixtures.filter(f => f.status === 'completed');
+  let matchesW = 0, matchesL = 0, matchesD = 0;
+  let gamesW = 0, gamesL = 0, ptsF = 0, ptsA = 0;
+  for (const f of completed) {
+    gamesW += f.wins;
+    gamesL += f.losses;
+    ptsF += f.points_for;
+    ptsA += f.points_against;
+    if (f.wins > f.losses) matchesW++;
+    else if (f.wins < f.losses) matchesL++;
+    else if (f.wins + f.losses > 0) matchesD++;
+  }
+
+  let summaryHtml = '';
+  if (completed.length > 0) {
+    summaryHtml = \`
+      <div class="card">
+        <div class="text-sm">
+          <strong>\${completed.length}</strong> of \${fixtures.length} matches played
+        </div>
+        <div class="text-sm" style="margin-top:4px;">
+          Matches: <span class="win">\${matchesW}W</span> – <span class="loss">\${matchesL}L</span>\${matchesD > 0 ? ' – ' + matchesD + 'D' : ''}
+        </div>
+        <div class="text-sm">
+          Games: <span class="win">\${gamesW}W</span> – <span class="loss">\${gamesL}L</span>
+          <span class="text-muted">&middot; Pts \${ptsF}–\${ptsA} (\${ptsF - ptsA >= 0 ? '+' : ''}\${ptsF - ptsA})</span>
+        </div>
+      </div>
+    \`;
+  }
+
   render(\`
     <a class="back" onclick="navigate('/')">&larr; Home</a>
     <h1>Fixtures</h1>
+    \${summaryHtml}
     \${rows || '<div class="card empty">No fixtures yet.</div>'}
   \`);
 }

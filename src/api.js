@@ -351,9 +351,18 @@ export async function handleApi(request, env) {
         'SELECT s.id FROM seasons s JOIN teams t ON s.team_id = t.id WHERE s.id = ? AND t.club_id = ?'
       ).bind(parseInt(seasonId), clubId).first();
       if (!owns) return json([]);
-      const rows = await db.prepare(
-        'SELECT * FROM fixtures WHERE season_id = ? ORDER BY week_number ASC'
-      ).bind(parseInt(seasonId)).all();
+      const rows = await db.prepare(`
+        SELECT f.*,
+          COUNT(CASE WHEN r.player_score > r.opponent_score THEN 1 END) as wins,
+          COUNT(CASE WHEN r.player_score < r.opponent_score THEN 1 END) as losses,
+          COALESCE(SUM(r.player_score), 0) as points_for,
+          COALESCE(SUM(r.opponent_score), 0) as points_against
+        FROM fixtures f
+        LEFT JOIN results r ON r.fixture_id = f.id
+        WHERE f.season_id = ?
+        GROUP BY f.id
+        ORDER BY f.week_number ASC
+      `).bind(parseInt(seasonId)).all();
       return json(rows.results);
     }
 
