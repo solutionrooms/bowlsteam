@@ -548,13 +548,16 @@ export async function handleApi(request, env) {
       const fixtureId = parseInt(orderMatch[1]);
 
       const fix = await db.prepare(`
-        SELECT f.id, f.opponent, f.venue, s.team_id, t.name AS team_name
+        SELECT f.id, f.opponent, f.venue, s.team_id, s.year AS season_year, t.name AS team_name
         FROM fixtures f
         JOIN seasons s ON f.season_id = s.id
         JOIN teams t ON s.team_id = t.id
         WHERE f.id = ? AND t.club_id = ?
       `).bind(fixtureId, clubId).first();
       if (!fix) return error('Fixture not found', 404);
+
+      const totalParam = parseFloat(url.searchParams.get('total'));
+      const targetTotal = Number.isFinite(totalParam) && totalParam > 0 ? totalParam : null;
 
       const sel = await db.prepare(`
         SELECT p.name FROM selections s JOIN players p ON s.player_id = p.id
@@ -591,6 +594,8 @@ export async function handleApi(request, env) {
         ourPlayers: roster.results.map(r => r.name),
         opponentTeam: fix.opponent,
         venue: fix.venue,
+        predictSeason: fix.season_year,
+        targetTotal,
       });
       return json({ fixture_id: fixtureId, opponent: fix.opponent, venue: fix.venue, ...rec });
     }

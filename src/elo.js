@@ -19,6 +19,7 @@ export const defaultEloConfig = {
   defaultScore: 15,   // fallback predicted score when no history
   residualSd: 5,      // inherent per-board score noise (≈ measured backtest MAE);
                       // dominates the honest expected-total range (§7.2)
+  minCalSamples: 24,  // below this, fall back to all-season calibration
 };
 
 /** Expected share of total chalks for player A given effective rating diff d. */

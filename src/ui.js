@@ -969,20 +969,10 @@ async function viewFixture(fixtureId) {
 // Captain-only suggested-order card. Deliberately framed as a steer with
 // visible uncertainty, never as a guaranteed optimiser (player_order.prd §7.2).
 function orderCard(fixtureId, rec, err) {
-  if (err) {
-    return \`
-      <div class="card">
-        <h3>Suggested Order</h3>
-        <div class="text-sm text-muted mt-8">Unavailable — \${err}</div>
-      </div>\`;
-  }
-  if (!rec || rec.error) {
-    return \`
-      <div class="card">
-        <h3>Suggested Order</h3>
-        <div class="text-sm text-muted mt-8">\${(rec && rec.error) || 'No recommendation'}</div>
-      </div>\`;
-  }
+  const wrap = inner => \`<div class="card" id="order-card">\${inner}</div>\`;
+  if (err) return wrap(\`<h3>Suggested Order</h3><div class="text-sm text-muted mt-8">Unavailable — \${err}</div>\`);
+  if (!rec || rec.error) return wrap(\`<h3>Suggested Order</h3><div class="text-sm text-muted mt-8">\${(rec && rec.error) || 'No recommendation'}</div>\`);
+
   const pct = Math.round((rec.predictability || 0) * 100);
   const conf = rec.low_confidence
     ? '<span class="badge badge-skip">low confidence</span>'
@@ -994,21 +984,35 @@ function orderCard(fixtureId, rec, err) {
       <td style="text-align:right;">\${o.expected.toFixed(1)}</td>
       <td class="text-sm text-muted" style="white-space:nowrap;">\${o.assumed_opponent || '—'}</td>
     </tr>\`).join('');
-  return \`
-    <div class="card">
+
+  const totalLine = rec.anchored
+    ? \`Your expected total: <strong>\${rec.expected_total}</strong> / \${rec.max_total} — shared across boards by relative strength
+       <span class="text-muted">(range \${rec.total_low}–\${rec.total_high}; model's own guess was ~\${rec.model_total})</span>\`
+    : \`Model estimate: <strong>\${rec.expected_total}</strong> / \${rec.max_total}
+       <span class="text-muted">(range \${rec.total_low}–\${rec.total_high}; calibrated to \${rec.predict_season || 'all'} season)</span>\`;
+  const inputVal = rec.anchored ? rec.expected_total : rec.model_total;
+
+  return wrap(\`
       <div class="flex-between mb-8">
         <h3>Suggested Order \${conf}</h3>
         <button class="copy-btn" onclick="copyOrder(\${fixtureId})">Copy</button>
       </div>
       <div class="text-sm text-muted mb-8">
-        A steer, not a guarantee — bowls is high-variance and this is built on
-        limited opponent data. Use it alongside your own judgement.
+        A steer, not a guarantee — the model picks who plays where; you set the
+        overall level you honestly expect (it knows the division, the data doesn't).
       </div>
       <div class="text-sm mb-8">
-        Expected <strong>\${rec.expected_total}</strong> / \${rec.max_total}
-        <span class="text-muted">(realistic range \${rec.total_low}–\${rec.total_high})</span><br>
+        \${totalLine}<br>
         Opponent order predictability: <strong>\${pct}%</strong>
         <span class="text-muted">(\${rec.opponent_matches} past matches)</span>
+      </div>
+      <div class="text-sm mb-8" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+        <span>Your honest expected total:</span>
+        <input id="order-total" type="number" min="0" max="\${rec.max_total}" step="1"
+          value="\${Math.round(inputVal)}" style="width:80px;margin:0;">
+        <span class="text-muted">/ \${rec.max_total}</span>
+        <button class="btn-sm btn-primary" onclick="applyOrderTotal(\${fixtureId})">Apply</button>
+        \${rec.anchored ? \`<button class="btn-sm btn-outline" onclick="applyOrderTotal(\${fixtureId}, true)">Use model</button>\` : ''}
       </div>
       <table style="width:100%;border-collapse:collapse;">
         <thead><tr class="text-sm text-muted" style="text-align:left;">
@@ -1019,8 +1023,23 @@ function orderCard(fixtureId, rec, err) {
       <div class="text-sm text-muted mt-8">
         vs simple strongest-first order: \${rec.gain_vs_naive >= 0 ? '+' : ''}\${rec.gain_vs_naive} chalks
         \${rec.low_confidence ? '— marginal; the opponent doesn\\'t keep a fixed order' : ''}
-      </div>
-    </div>\`;
+      </div>\`);
+}
+
+async function applyOrderTotal(fixtureId, useModel) {
+  const el = document.getElementById('order-total');
+  const val = useModel ? null : (el && parseFloat(el.value));
+  const qs = (val && val > 0) ? '?total=' + encodeURIComponent(val) : '';
+  let rec = null, e = null;
+  try {
+    const res = await fetch('/api/fixtures/' + fixtureId + '/order' + qs, {
+      headers: { 'X-Club-Pin': state.pin },
+    });
+    const d = await res.json();
+    if (res.ok) rec = d; else e = d.error || 'Unavailable';
+  } catch (_) { e = 'Unavailable'; }
+  const card = document.getElementById('order-card');
+  if (card) card.outerHTML = orderCard(fixtureId, rec, e);
 }
 
 async function copyOrder(fixtureId) {

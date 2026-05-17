@@ -12,13 +12,17 @@ import {
 
 const norm = s => (s || '').toString().trim().toLowerCase().replace(/\s+/g, ' ');
 
-// Chronological score-share Elo over every league game; also collect
-// calibration samples from BOTH players' perspectives so the curve maps
-// "rating gap (incl. home edge) → expected that player's chalks".
-function buildLadder(games, cfg) {
+// Chronological score-share Elo over every league game (relative strength
+// transfers across divisions, so the ladder uses ALL seasons). Calibration
+// samples (rating gap → expected chalks) are split by season: we calibrate
+// on the prediction season only when it has enough data, because the score
+// level is division-specific (e.g. W1: strong Div-1-earned ratings now post
+// much higher scores in Div 2). Falls back to all-seasons if too thin.
+function buildLadder(games, cfg, predictSeason) {
   const R = new Map();
   const get = k => (R.has(k) ? R.get(k) : cfg.start);
-  const samples = [];
+  const allS = [];
+  const curS = [];
   const ordered = games.slice().sort(
     (a, b) => (a.match_date || '').localeCompare(b.match_date || ''));
   for (const g of ordered) {
@@ -26,13 +30,21 @@ function buildLadder(games, cfg) {
     const hk = norm(g.home_player);
     const ak = norm(g.away_player);
     const d = get(hk) - get(ak) + cfg.homeAdv;
-    samples.push({ d, score: g.home_score });
-    samples.push({ d: -d, score: g.away_score });
+    allS.push({ d, score: g.home_score }, { d: -d, score: g.away_score });
+    if (predictSeason && g.season_year === predictSeason) {
+      curS.push({ d, score: g.home_score }, { d: -d, score: g.away_score });
+    }
     const delta = cfg.k * (outcomeShare(g.home_score, g.away_score) - expectedShare(d, cfg.scale));
     R.set(hk, get(hk) + delta);
     R.set(ak, get(ak) - delta);
   }
-  return { R, curve: calibrate(samples, 8) };
+  const useCurrent = predictSeason && curS.length >= cfg.minCalSamples;
+  return {
+    R,
+    curve: calibrate(useCurrent ? curS : allS, 8),
+    calibration_basis: useCurrent ? `${predictSeason} season` : 'all seasons',
+    calibration_samples: useCurrent ? curS.length / 2 : allS.length / 2,
+  };
 }
 
 // Per board slot, what does the opponent team habitually field there?
@@ -129,6 +141,9 @@ function* permutations(arr) {
  *                opponent habit so a transferred player isn't shown vs himself)
  *   a.opponentTeam opponent team name
  *   a.venue      'Home' | 'Away'
+ *   a.predictSeason optional year — calibrate score level to this season only
+ *   a.targetTotal optional — captain's honest expected team total (chalks);
+ *                 anchors the absolute level, model only sets relative shape
  *   a.config     optional season_config overrides (k, scale, homeAdv, …)
  * @returns recommendation (see fields below)
  */
@@ -141,7 +156,8 @@ export function recommendOrder(a) {
   const ourSet = new Set(
     [...(a.ourPlayers || []), ...selected].map(norm));
 
-  const { R, curve } = buildLadder(a.games || [], cfg);
+  const { R, curve, calibration_basis, calibration_samples } =
+    buildLadder(a.games || [], cfg, a.predictSeason);
   const habit = opponentHabit(a.games || [], a.opponentTeam, R, cfg, ourSet);
   const strengthOf = name => (R.has(norm(name)) ? R.get(norm(name)) : cfg.start);
 
@@ -183,45 +199,78 @@ export function recommendOrder(a) {
     usedOpp.add(t.key);
   }
 
-  const order = [];
+  const rawMeans = [];
   let variance = 0;
   for (let slot = 0; slot < n; slot++) {
-    const pi = best.perm[slot];
-    const c = cell[pi][slot];
+    const c = cell[best.perm[slot]][slot];
     variance += c.variance;
+    rawMeans.push(c.mean);
+  }
+
+  // Captain anchor: if a target total is given, the model only sets the
+  // RELATIVE shape (which players, in what order — the assignment above is
+  // unchanged since a uniform rescale preserves the argmax). The absolute
+  // level is the captain's honest call, which side-steps cross-division
+  // calibration entirely (player_order.prd §7.2).
+  const modelTotal = best.tot;
+  const anchored = a.targetTotal > 0;
+  const shownMeans = anchored ? distribute(rawMeans, a.targetTotal) : rawMeans.slice();
+
+  const order = [];
+  for (let slot = 0; slot < n; slot++) {
     const opp = oppBySlot[slot];
     order.push({
       board: slotIds[slot],
-      player: selected[pi],
-      expected: Math.round(c.mean * 10) / 10,
+      player: selected[best.perm[slot]],
+      expected: Math.round(shownMeans[slot] * 10) / 10,
       assumed_opponent: opp ? opp.name : null,
       assumed_opponent_strength: opp ? opp.strength : null,
     });
   }
+  const shownTotal = shownMeans.reduce((s, v) => s + v, 0);
 
   // Naive comparison: our players strongest-on-board-1 (the obvious order).
   const naivePerm = idx.slice().sort((x, y) => strengthOf(selected[y]) - strengthOf(selected[x]));
-  let naiveTotal = 0;
-  for (let slot = 0; slot < n; slot++) naiveTotal += cell[naivePerm[slot]][slot].mean;
+  let naiveRaw = 0;
+  for (let slot = 0; slot < n; slot++) naiveRaw += cell[naivePerm[slot]][slot].mean;
+  const naiveShown = anchored && modelTotal > 0 ? naiveRaw * (shownTotal / modelTotal) : naiveRaw;
 
-  // Honest range (§7.2): the band must reflect REAL uncertainty, which is
-  // dominated by inherent game-day noise, not opponent-assignment variance.
-  // Combine both in quadrature so the tool never looks more precise than it
-  // is: σ² = Σ(assignment var) + n·residualSd².
+  // Honest range (§7.2): dominated by inherent game-day noise, not the
+  // opponent-assignment variance. σ² = Σ(assignment var) + n·residualSd².
   const sd = Math.sqrt(variance + n * cfg.residualSd * cfg.residualSd);
   const clamp = v => Math.max(0, Math.min(21 * n, v));
 
   return {
     decision_support: true, // never present as a guaranteed optimiser (§7.2)
     order,
-    expected_total: Math.round(best.tot * 10) / 10,
-    total_low: Math.round(clamp(best.tot - 0.674 * sd) * 10) / 10,
-    total_high: Math.round(clamp(best.tot + 0.674 * sd) * 10) / 10,
+    anchored,
+    expected_total: Math.round(shownTotal * 10) / 10,
+    model_total: Math.round(modelTotal * 10) / 10,
+    total_low: Math.round(clamp(shownTotal - 0.674 * sd) * 10) / 10,
+    total_high: Math.round(clamp(shownTotal + 0.674 * sd) * 10) / 10,
     max_total: 21 * n,
-    naive_total: Math.round(naiveTotal * 10) / 10,
-    gain_vs_naive: Math.round((best.tot - naiveTotal) * 10) / 10,
+    naive_total: Math.round(naiveShown * 10) / 10,
+    gain_vs_naive: Math.round((shownTotal - naiveShown) * 10) / 10,
     predictability: Math.round(habit.predictability * 100) / 100,
     opponent_matches: habit.matches,
+    calibration_basis,
+    calibration_samples,
+    predict_season: a.predictSeason || null,
     low_confidence: habit.matches < 4 || habit.predictability < 0.34,
   };
+}
+
+// Scale raw per-board means so they sum to `target`, respecting the 0–21 cap
+// with one redistribution pass for whatever the caps displace.
+function distribute(raw, target) {
+  const sum = raw.reduce((s, v) => s + v, 0) || 1;
+  const f = target / sum;
+  let out = raw.map(v => Math.min(21, Math.max(0, v * f)));
+  const deficit = target - out.reduce((s, v) => s + v, 0);
+  if (Math.abs(deficit) > 0.01) {
+    const room = out.map(v => (deficit > 0 ? 21 - v : v));
+    const roomSum = room.reduce((s, v) => s + v, 0) || 1;
+    out = out.map((v, i) => Math.min(21, Math.max(0, v + deficit * room[i] / roomSum)));
+  }
+  return out;
 }
