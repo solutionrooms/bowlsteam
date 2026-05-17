@@ -909,6 +909,21 @@ async function viewFixture(fixtureId) {
     \`;
   }
 
+  // Suggested order — captain-only decision-support (player_order.prd §6, §7.2).
+  // Raw fetch (not api()) so a "data not loaded" 503 stays quiet, not a toast.
+  let orderHtml = '';
+  if (isCaptain() && hasSelection) {
+    let rec = null, orderErr = null;
+    try {
+      const res = await fetch('/api/fixtures/' + fixtureId + '/order', {
+        headers: { 'X-Club-Pin': state.pin },
+      });
+      const d = await res.json();
+      if (res.ok) rec = d; else orderErr = d.error || 'Unavailable';
+    } catch (e) { orderErr = 'Unavailable'; }
+    orderHtml = orderCard(fixtureId, rec, orderErr);
+  }
+
   render(\`
     <a class="back" onclick="navigate('/fixtures')">&larr; Fixtures</a>
     <div class="card">
@@ -945,9 +960,86 @@ async function viewFixture(fixtureId) {
     \` : ''}
 
     \${selectionHtml}
+    \${orderHtml}
     \${scoreEntryHtml}
     \${resultsHtml}
   \`);
+}
+
+// Captain-only suggested-order card. Deliberately framed as a steer with
+// visible uncertainty, never as a guaranteed optimiser (player_order.prd §7.2).
+function orderCard(fixtureId, rec, err) {
+  if (err) {
+    return \`
+      <div class="card">
+        <h3>Suggested Order</h3>
+        <div class="text-sm text-muted mt-8">Unavailable — \${err}</div>
+      </div>\`;
+  }
+  if (!rec || rec.error) {
+    return \`
+      <div class="card">
+        <h3>Suggested Order</h3>
+        <div class="text-sm text-muted mt-8">\${(rec && rec.error) || 'No recommendation'}</div>
+      </div>\`;
+  }
+  const pct = Math.round((rec.predictability || 0) * 100);
+  const conf = rec.low_confidence
+    ? '<span class="badge badge-skip">low confidence</span>'
+    : '<span class="badge badge-core">usable signal</span>';
+  const rows = rec.order.map(o => \`
+    <tr>
+      <td style="font-weight:600;">\${o.board}</td>
+      <td style="white-space:nowrap;">\${o.player}</td>
+      <td style="text-align:right;">\${o.expected.toFixed(1)}</td>
+      <td class="text-sm text-muted" style="white-space:nowrap;">\${o.assumed_opponent || '—'}</td>
+    </tr>\`).join('');
+  return \`
+    <div class="card">
+      <div class="flex-between mb-8">
+        <h3>Suggested Order \${conf}</h3>
+        <button class="copy-btn" onclick="copyOrder(\${fixtureId})">Copy</button>
+      </div>
+      <div class="text-sm text-muted mb-8">
+        A steer, not a guarantee — bowls is high-variance and this is built on
+        limited opponent data. Use it alongside your own judgement.
+      </div>
+      <div class="text-sm mb-8">
+        Expected <strong>\${rec.expected_total}</strong> / \${rec.max_total}
+        <span class="text-muted">(realistic range \${rec.total_low}–\${rec.total_high})</span><br>
+        Opponent order predictability: <strong>\${pct}%</strong>
+        <span class="text-muted">(\${rec.opponent_matches} past matches)</span>
+      </div>
+      <table style="width:100%;border-collapse:collapse;">
+        <thead><tr class="text-sm text-muted" style="text-align:left;">
+          <th>#</th><th>Player</th><th style="text-align:right;">Exp</th><th>Likely opponent</th>
+        </tr></thead>
+        <tbody>\${rows}</tbody>
+      </table>
+      <div class="text-sm text-muted mt-8">
+        vs simple strongest-first order: \${rec.gain_vs_naive >= 0 ? '+' : ''}\${rec.gain_vs_naive} chalks
+        \${rec.low_confidence ? '— marginal; the opponent doesn\\'t keep a fixed order' : ''}
+      </div>
+    </div>\`;
+}
+
+async function copyOrder(fixtureId) {
+  let rec;
+  try {
+    const res = await fetch('/api/fixtures/' + fixtureId + '/order', {
+      headers: { 'X-Club-Pin': state.pin },
+    });
+    rec = await res.json();
+    if (!res.ok) { showToast(rec.error || 'Unavailable', true); return; }
+  } catch (e) { showToast('Unavailable', true); return; }
+  let text = 'Suggested order vs ' + rec.opponent + ' (' + rec.venue + ')\\n';
+  text += 'Steer only — expected ~' + rec.expected_total + '/' + rec.max_total +
+    ' (range ' + rec.total_low + '-' + rec.total_high + ')\\n\\n';
+  rec.order.forEach(o => {
+    text += o.board + '. ' + o.player.padEnd(18) + ' ~' + o.expected.toFixed(1) +
+      (o.assumed_opponent ? '  (likely ' + o.assumed_opponent + ')' : '') + '\\n';
+  });
+  await copyText(text);
 }
 
 async function viewRatings() {

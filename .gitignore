@@ -1,2 +1,7 @@
 node_modules/
 .wrangler/
+
+# Regenerable scraped data + temp loader SQL. The app reads league_games
+# from D1 (via `npm run load`), never from these files.
+tools/league_games.json
+tools/_load.sql

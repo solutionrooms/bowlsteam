@@ -260,6 +260,93 @@ function parseMatch(html, ourTeamName) {
 }
 
 /**
+ * Parse a match page keeping BOTH teams' boards (not just ours).
+ * Board number = order of appearance = playing order.
+ * @param {string} html
+ * @returns {{homeTeam:string|null, awayTeam:string|null, boards:Array<{
+ *   board:number, home_player:string, home_score:number,
+ *   away_player:string, away_score:number}>}}
+ */
+export function parseMatchBoth(html) {
+  const headerMatch = html.match(/HOME TEAM[\s\S]*?>([^<]+)<\/a>[\s\S]*?AWAY TEAM[\s\S]*?>([^<]+)<\/a>/);
+  const homeTeam = headerMatch ? headerMatch[1].trim() : null;
+  const awayTeam = headerMatch ? headerMatch[2].trim() : null;
+
+  const boards = [];
+  const trRegex = /<tr>\s*<td class="MatchPlayerName">([\s\S]*?)<\/td>\s*<td class="MatchScore">([\s\S]*?)<\/td>\s*<td class="MatchScore">[\s\S]*?<\/td>\s*<td class="MatchPlayerName">([\s\S]*?)<\/td>\s*<td class="MatchScore">([\s\S]*?)<\/td>\s*<td class="MatchScore">[\s\S]*?<\/td>\s*<\/tr>/g;
+  let m;
+  let board = 0;
+  while ((m = trRegex.exec(html)) !== null) {
+    board++;
+    boards.push({
+      board,
+      home_player: stripTags(m[1]).trim(),
+      home_score: parseInt(stripTags(m[2])) || 0,
+      away_player: stripTags(m[3]).trim(),
+      away_score: parseInt(stripTags(m[4])) || 0,
+    });
+  }
+  return { homeTeam, awayTeam, boards };
+}
+
+/**
+ * Parse a team page's fixture list, capturing the match.php link per row so
+ * an ingest can follow it. Only rows with a match link are returned (those
+ * are the completed games).
+ * @param {string} html
+ * @param {number} year
+ * @returns {Array<{match_date:string, opponent:string, venue:string, match_url:string}>}
+ */
+export function parseTeamFixtures(html, year) {
+  const out = [];
+  const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+  let rowMatch;
+  while ((rowMatch = rowRegex.exec(html)) !== null) {
+    const row = rowMatch[1];
+    const linkMatch = row.match(/href=['"]([^'"]*match\.php[^'"]*)['"]/i);
+    if (!linkMatch) continue;
+
+    const cells = [];
+    const cellRegex = /<td[^>]*>([\s\S]*?)<\/td>/gi;
+    let cm;
+    while ((cm = cellRegex.exec(row)) !== null) {
+      cells.push(cm[1].replace(/<[^>]+>/g, '').trim());
+    }
+    let venueIdx = -1;
+    for (let i = 0; i < cells.length; i++) {
+      if (cells[i] === 'Home' || cells[i] === 'Away') { venueIdx = i; break; }
+    }
+    if (venueIdx === -1) continue;
+    const dateRegex = /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)$/i;
+    let dateMatch = null;
+    for (const c of cells) {
+      const dm = c.match(dateRegex);
+      if (dm) { dateMatch = dm; break; }
+    }
+    if (!dateMatch) continue;
+    const opponent = cells[venueIdx - 1] || cells[0];
+    if (!opponent || opponent === 'Home' || opponent === 'Away') continue;
+
+    let url = linkMatch[1].replace(/&amp;/g, '&');
+    if (url.startsWith('/')) url = 'https://www.cgleague.co.uk' + url;
+    else if (!url.startsWith('http')) url = 'https://www.cgleague.co.uk/' + url;
+
+    // A completed fixture shows two aggregate score cells; an upcoming one
+    // is blank. Lets the ingest skip not-yet-played matches without fetching.
+    const completed = cells.filter(c => /^\d+$/.test(c)).length >= 2;
+
+    out.push({
+      match_date: `${year}-${String(monthToNum(dateMatch[2])).padStart(2, '0')}-${String(parseInt(dateMatch[1])).padStart(2, '0')}`,
+      opponent,
+      venue: cells[venueIdx],
+      match_url: url,
+      completed,
+    });
+  }
+  return out;
+}
+
+/**
  * Extract the href from the first <a> tag in a fragment, resolved to absolute URL.
  */
 function extractHref(html) {
@@ -278,7 +365,7 @@ function stripTags(s) {
  * Parse the division from the page heading.
  * Format: "Division 2 - Season 2026"
  */
-function parseDivision(html) {
+export function parseDivision(html) {
   const match = html.match(/Division\s+(\d+)\s*-\s*Season\s+(\d+)/i);
   if (match) return `Division ${match[1]}`;
   return '';

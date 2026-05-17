@@ -99,6 +99,28 @@ CREATE TABLE IF NOT EXISTS results (
     UNIQUE(fixture_id, player_id)
 );
 
+-- Raw per-board results for ANY team/season, scraped from cgleague.
+-- Feeds the cross-team Elo ladder (player_order.prd §5.1). Immutable: a
+-- recorded cgleague game never changes, so we only ever insert new rows
+-- (dedupe on match_url + board). Phase 2 populates a local JSON file from
+-- the offline ingest; loading this table server-side is a Phase 3 concern.
+CREATE TABLE IF NOT EXISTS league_games (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    season_year INTEGER NOT NULL,
+    match_date TEXT,
+    division TEXT,
+    home_team TEXT NOT NULL,
+    away_team TEXT NOT NULL,
+    board INTEGER NOT NULL,
+    home_player TEXT,
+    home_score INTEGER,
+    away_player TEXT,
+    away_score INTEGER,
+    match_url TEXT NOT NULL,
+    UNIQUE(match_url, board)
+);
+
+CREATE INDEX IF NOT EXISTS idx_league_games_date ON league_games(match_date);
 CREATE INDEX IF NOT EXISTS idx_results_player ON results(player_id);
 CREATE INDEX IF NOT EXISTS idx_results_fixture ON results(fixture_id);
 CREATE INDEX IF NOT EXISTS idx_fixtures_season ON fixtures(season_id);

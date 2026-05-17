@@ -2,12 +2,16 @@
   "name": "bowlsteam",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "devDependencies": {
     "wrangler": "^4.75.0"
   },
   "scripts": {
     "dev": "wrangler dev",
     "db:init": "wrangler d1 execute bowlsteam-db --local --file=schema.sql",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "ingest": "node tools/ingest.mjs",
+    "load": "node tools/load.mjs",
+    "backtest": "node tools/backtest.mjs"
   }
 }

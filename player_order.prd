@@ -1,0 +1,399 @@
+# Player Order — Product Requirements / Thinking Doc
+
+Status: **DRAFT — for discussion, not yet for build**
+Owner: Jon Scott (captain, Westlands 1)
+Date: 2026-05-17
+
+---
+
+## 1. The idea in one line
+
+Once the 8 players are *selected*, decide **what board order (1–8) to play them in** so the
+team's **total chalks scored** is as high as possible, against an opponent whose order we
+submit blind and don't know in advance.
+
+This is separate from selection. Selection = "who plays". Ordering = "in what slots". This
+doc is only about ordering.
+
+---
+
+## 2. Confirmed rules (answered by Jon, 2026-05-17)
+
+- **Pairing:** we submit order 1–8, they submit order 1–8, board N plays board N. Order
+  directly determines matchups. ✅ feature is meaningful.
+- **Scoring:** league standing is based on **average chalks our team scores per match**.
+  Max = 168 (8 boards × 21). Margin/win-count does *not* matter directly — only our own
+  total. 21–4 is as good as 21–20. 20–21 is *nearly* as good as a win. 4–21 is a disaster.
+- **Info order:** both captains submit order **blind and simultaneously**. We cannot
+  best-respond to a known opponent order; we optimise against *likely* opponent orders.
+
+---
+
+## 3. The objective function (this is the heart of it)
+
+In flat-green singles to 21, each board's contribution to our league total is:
+
+```
+board_score =  21                       if our player wins the board
+               our_score_at_their_21    if our player loses the board   (0–20)
+```
+
+So the lineup objective is:
+
+```
+maximise   E[ Σ_b  board_score_b ]
+           over the distribution of opponent orderings (§6)
+
+         = E[ Σ_b ( 21 · P(win_b)  +  E[losing_score_b | loss] · P(lose_b) ) ]
+```
+
+Three consequences fall straight out of this and they match Jon's goals exactly:
+
+1. **Any win banks the 21 cap.** A narrow win and a thrashing are identical. There is no
+   "winning by too much" — the cap means surplus strength on a winning board is simply
+   inert, not harmful.
+2. **A narrow loss still banks a lot.** Losing 19–21 banks 19 of a possible 21. So we
+   should almost never *throw* a board to 4–21 — even "sacrificed" boards must be lost as
+   narrowly as the squad allows.
+3. **"Don't waste a good player" = score saturation.** Because the score ceiling is 21, a
+   strong player on an easy board (≈21) barely out-scores a medium player there (≈20).
+   On a hard board the strong player might bank 16 where the medium player banks 6. **The
+   marginal value of strength is highest where the opponent is strongest.** Therefore push
+   strong players *toward* the harder boards, not the easy ones — the opposite of "best
+   player on board 1".
+
+Margin over the opponent never enters the objective. Win-count never enters directly
+(it only matters because a win banks the 21 cap).
+
+---
+
+## 4. Inputs available
+
+| Input | Source | Notes |
+|---|---|---|
+| Our 8 players (selected) | BowlSteam selection | fixed input for this fixture |
+| Per-player **home** & **away** strength | Elo ladder from all results, split by venue (§5.1) | **new data work — see §8** |
+| This fixture's venue | fixtures table | picks home vs away strength for both sides |
+| Opponent roster (their 8) | cgleague `match.php` for the fixture | often only known late |
+| Opponent per-player strength (home/away) | same Elo ladder, fed by `player.php` history scrape | replaces raw net-chalks; one comparable scale (§5.1) |
+| Opponent **order fingerprint** | this + last season only (`match.php` / `?DB=A&S=YYYY`) | see §6 — core asset; older seasons excluded (captain churn); profile cached in D1 |
+
+The single biggest gap: we currently compute one blended rating per player. Ordering needs
+**separate home and away strength** for our players *and* opponents.
+
+---
+
+## 5. The matchup model
+
+For a candidate pairing (our *p* on board *b* vs their *q*), at this fixture's venue:
+
+- `s_p` = strength of *p* at this venue (home if we're home, else away).
+- `s_q` = strength of *q* at the venue they're playing (the opposite of ours).
+- Gap `Δ = s_p − s_q`.
+
+We need **two** calibrated functions of Δ (not one):
+
+- `P(win | Δ)` — monotonic increasing (logistic, fit on history).
+- `E[our score | loss, Δ]` — increasing in Δ: the closer the players, the closer our
+  losing score gets to 21; a big negative Δ means a heavy defeat (low score).
+
+Per-board expected contribution:
+
+```
+v_b(p,q) = 21·P(win|Δ)  +  (1 − P(win|Δ))·E[score | loss, Δ]
+```
+
+This `v_b` is the value we sum and maximise. Note it is **concave/saturating** in `s_p`
+(diminishing returns as we approach a sure 21) — that concavity is exactly what makes
+strong players most valuable on the hard boards.
+
+### 5.1 Where strength comes from — an Elo-style ladder (Phase 2)
+
+`s_p` and `s_q` above are only as good as the strength numbers we feed them. The signals we
+have today are **non-relational and not comparable**:
+
+- our rolling-window *average* — beating a strong player and a weak one move it the same;
+- opponents' *net chalks* — same flaw, and on a different scale to our numbers.
+
+The existing difficulty-bonus mechanism (α, win/loss caps) is essentially a hand-rolled
+patch for this missing relational model. A proper **Elo-type rating** fixes it at the root:
+
+- **Strength-of-schedule is baked in.** A win over a strong player raises you more than a
+  win over a weak one — automatically, no bolt-on bonus.
+- **One ladder for everyone.** Build it from *all* scraped results league-wide (we already
+  pull opponents' full game histories via `player.php`), so our players and every opponent
+  sit on the **same comparable scale** — exactly what `Δ = s_p − s_q` needs.
+- **Make it score-predicting, not just win/loss.** Fit the rating so that rating
+  difference maps directly to *expected chalks-for* (0–21). That single model **subsumes
+  both** `P(win|Δ)` and `E[score|loss,Δ]` in §5 — one coherent curve instead of two
+  separate fits.
+- **Home advantage** = an additive term on the home player's effective rating (or keep
+  separate home/away ladders — decide in backtest, §7).
+- **Carry uncertainty.** Prefer a Glicko-style variant (rating *plus* a reliability/RD
+  term) so sparse or new players are explicitly low-confidence. That uncertainty feeds the
+  §6.5 expected-total band and the §6.3 honesty about what we don't know.
+
+**Form vs. skill tension (flag, don't silently decide).** Elo is *cumulative skill*; the
+current rolling window is *recent form*. They answer different questions — order/matchup
+wants reliable skill identification, selection may want form. A hybrid (Elo baseline +
+recent-form adjustment) is likely, but this is an open question (§9).
+
+**Cross-system reuse.** The same ladder can replace/augment the **selection** system's
+strength input and retire the difficulty-bonus hack there too. But selection is the
+trusted, live feature the team relies on — any change there is **opt-in and separately
+backtested**, never a silent swap alongside this work.
+
+---
+
+## 6. Opponent order intelligence (the edge)
+
+This is the heart of the feature. We submit blind, so we can't react to their order — but
+**many teams keep a rough order most of the time**, and that habit is exploitable. The job
+is to learn each opponent's habit from *all* their history and bet against it.
+
+### 6.1 Data scope — this season + last season only
+
+**Decision: use only this season and last season.** Not just for simplicity — it's the
+*correct* scope. The ordering habit is largely set by the **captain**, so seasons older
+than last risk reflecting a *different* captain's philosophy entirely (plus heavier roster
+churn). Deeper archive history is therefore potentially *worse* data, not just more work:
+it can dilute or actively mislead a current-captain signal. Two seasons is also enough to
+tell whether a team keeps a rough order.
+
+- **Live, in the app (per fixture):** scrape **this season** (`match.php`) + **last
+  season** (`match.php?DB=A&S=YYYY`) for the opponent. Two requests, always current, no
+  archive crawling in the Worker.
+- **Deeper archive:** *deliberately out of scope.* If a specific question ever needs it, it
+  can be pulled by a one-off local script — but treat anything older than last season as
+  suspect because the captain has likely changed. Not part of the normal process.
+
+**Scrape incrementally — a recorded match is immutable.** Once a game's scores are on
+cgleague they don't change, so never re-fetch a fixture we already have. Store raw scraped
+fixtures keyed by match identity; on each run, fetch only the fixtures *not yet in our
+store* (this season: just the newly-completed ones; last season: nothing after the first
+full ingest). This makes even the "two seasons live" path near-free after the initial pull
+— typically zero or one new fixture per opponent per week.
+
+Caveat: results are *usually* immutable but a captain can occasionally correct a data-entry
+error on cgleague. Treat stored fixtures as final, but expose a manual "force re-scrape this
+fixture" escape hatch for the rare correction — don't build automatic change-detection.
+
+Store the *computed habit profile* in D1 and recompute it only when new fixtures are
+ingested, not on every recommendation. Recency-weight (this season > last season > older)
+so a genuine recent style change isn't drowned out, but old data still counts.
+
+This keeps the production path to ~zero HTTP calls in steady state and pushes all the messy
+multi-season crawling into an offline tool we run by hand.
+
+### 6.2 Model the habit at two layers
+
+Rosters churn (players retire, transfer, get promoted away). So learn **two** profiles:
+
+- **Identity-by-slot** — for each board slot, the distribution over *which named player*
+  appears there. Sharp and powerful while their roster is stable; decays as players leave.
+- **Strength-by-slot** — for each slot, the distribution over *opponent strength* that
+  appears there (using each player's own rating). This is the **durable** signal: "this
+  team always plays its strong players in the same order" is useful **even when the actual
+  players change** — it's a team *style*, not a person, and needs zero roster overlap with
+  this week's lineup. When identity data is stale or the names are all new, this still
+  works.
+
+Use identity-by-slot where the roster overlaps this season's known squad; fall back to
+strength-by-slot otherwise. Both feed the same sampler in §6.4.
+
+### 6.3 Predictability score = the intelligence itself
+
+For each opponent compute a **consistency / predictability score** (per slot and overall),
+e.g. based on the entropy of the slot distributions:
+
+- **Low entropy (rigid order)** → high-confidence exploitation. We can position
+  deliberately against their fixed slots.
+- **High entropy (they shuffle every week)** → not exploitable; the recommender should say
+  so, drop to a robust default, and tell the captain not to over-trust it.
+
+Even *partial* rigidity is gold: a team that always plays its captain on board 1 and
+randomises the rest still hands us one exploitable slot. Report stable slots vs volatile
+slots separately, not just one global number.
+
+### 6.4 Turn the habit into a recommendation
+
+1. Sample opponent orderings from the (recency-weighted, two-layer) habit profile,
+   respecting "each player used once".
+2. For each of **our** candidate orderings, compute Σ_b v_b (§5) averaged over samples.
+3. **Search:** 8! = 40,320 permutations — enumerate exactly, no heuristic needed. Return
+   the best plus the next few for the captain to eyeball.
+4. **No usable history (new/promoted opponent, or high-entropy team):** fall back to a
+   robust default and flag low confidence — don't pretend to intelligence we don't have.
+
+Game-theory note: blind-vs-blind is formally a simultaneous game with a Nash mixed
+strategy, but that's overkill here. Best-response to their *measured historical habit* is
+the pragmatic, explainable choice — and the predictability score (§6.3) tells us exactly
+how much to trust it.
+
+### 6.5 What the captain sees — expected scores (required output)
+
+**Access control (hard requirement).** This whole feature — the recommended order, every
+expected score, the opponent habit/predictability intelligence, and the underlying
+endpoints — is **captain-only** (full PIN). The read-only player PIN must not see it or be
+able to reach its API. It is tactical intelligence about opponents; it must not leak to
+players (who could repeat it) or to anyone outside the captain role. Enforce on the
+**server** (endpoints reject non-captain PIN), not just by hiding UI.
+
+When an order is set, the screen must show **expected score per board** and the
+**expected match total**:
+
+- **Per board:** the expected chalks for that board = `v_b` from §5
+  (`21·P(win) + (1−P(win))·E[score | loss]`), shown next to each player, e.g.
+  `Board 4 — J. Scott  ~17.2`. Optionally annotate (likely win / narrow loss / heavy loss)
+  and the assumed opponent for that slot.
+- **Whole match:** the sum, presented as **`expected total / 168`** (e.g. `~138 / 168`),
+  with the season average for context so the number is meaningful.
+
+Uncertainty caveat: the total is an *expectation over their likely orders*, not a
+prediction of the actual result. Show it as a **range, not a false-precision point** —
+e.g. the 25th–75th percentile band from the §6.4 samples (`~131–144`, mid ~138). When the
+predictability score (§6.3) is low the band will be wide; that width *is* the honest
+confidence signal and should be visible, not hidden.
+
+Comparison view: show the expected total for the **recommended** order vs the order the
+captain would otherwise pick (or last-used), so the gain is explicit — this is also what
+the §7 backtest measures, just shown live.
+
+---
+
+## 7. Validation / backtest plan
+
+Test before trusting:
+
+- Replay every completed past fixture: feed the model the squad + opponent roster known
+  beforehand; get its recommended order; compare to what was actually played.
+- Primary metric: **expected total chalks** of the recommended order under the *actual*
+  opponent lineup, vs the order actually used. Aggregate over the season; is the uplift
+  bigger than noise?
+- Calibrate `P(win|Δ)` and `E[score|loss,Δ]` on the same history (logistic + a simple
+  regression; check Brier score and residuals).
+
+Ship only if the backtest shows a real, repeatable gain in total chalks.
+
+### 7.1 Result — 2026-05-17 (gate: NOT passed)
+
+Built and run (`src/elo.js`, `tools/ingest.mjs`, `tools/backtest.mjs`). Dense
+cross-team ladder ingested from cgleague: **1040 board-rows, 216 matches, 292
+players, 2025 (full) + 2026 (partial)**; 200 Westlands-1 boards evaluated
+walk-forward.
+
+| Run | Data | Elo MAE | Baseline MAE | Improvement | 90% interval | Verdict |
+|---|---|---|---|---|---|---|
+| Sparse | 40 games, our results only | 3.69 | 4.45 | +0.76 | [-0.78, 2.34] | inconclusive (thin) |
+| **Dense** | 1040 games, cross-team | **4.90** | **4.99** | **+0.09** | **[-0.27, 0.45]** | **inconclusive (tight)** |
+
+The dense interval is *tight* (~0.7 wide), so this is not a sample-size
+problem — it is the answer. A relational Elo on two seasons of cross-team
+data does **not** beat a player's own recent-score average at predicting
+their board score; any real edge is < ~0.3 chalks against the ~5-chalk
+inherent noise of singles-to-21. Densification did fix the calibration bias
+(+0.72 vs the sparse run's +2.1), confirming the model works — there simply
+isn't exploitable opponent signal.
+
+**Implication:** the matchup model (§5) has no real predictive power here, so
+the recommender (§6.4) would be optimising noise. **Phase 3 is gated OFF by
+this result.** Honest options: (a) shelve the ordering feature; (b) re-run
+late-2026 as more games land (a reversal is unlikely given the tight
+interval); (c) revisit only if a materially different signal is found — not
+by knob-tuning, which would be overfitting to noise (explicitly disallowed by
+§10). Known caveats that *cap* but don't overturn the conclusion: name-string
+identity noise across 292 players; 2025-only opponents are sparsely connected
+(we fetched our team + 2026 opponents' pages, not every 2025 team's full
+history); cross-division shift (W1 Div1 2025 → Div2 2026).
+
+### 7.2 Decision — 2026-05-17 (gate overridden, build approved)
+
+Captain's call: **proceed with the build despite §7.1.** Rationale (valid and
+recorded, not waved through): the backtest measures *prediction accuracy
+against historical outcomes*, but those outcomes were produced under orders
+**not chosen by this method**. The counterfactual — "what would our optimised
+order have scored?" — is unobservable from historical data, so a
+predictive-accuracy null does not prove the *optimiser* has no value; it only
+shows opponent strength doesn't sharpen per-board score prediction. The
+feature is therefore accepted as **captain decision-support, explicitly not a
+proven optimiser**.
+
+Consequences carried into the build:
+- The UI must be honest: present it as a *suggestion with shown reasoning and
+  uncertainty*, never as "this will score more". Surface the predictability
+  score and expected-total **range** prominently (§6.5) so thin signal looks
+  thin.
+- §7.1 stays on the record; this is an informed product decision, not a
+  refutation of the data.
+- Guardrails unchanged: captain-PIN only, server-enforced; the live selection
+  system is **not** touched.
+
+---
+
+## 8. Proposed phasing
+
+- **Phase 0 (this doc).** Agree the objective in §3. ← we are here
+- **Phase 1 — data.** Ingest all scraped results onto one league-wide ladder; split by
+  home/away for our players and opponents. No UI.
+- **Phase 2 — Elo model + backtest.** Build the Elo/Glicko ladder (§5.1) so rating
+  difference predicts expected chalks-for directly (subsumes the two Δ-functions). Build
+  the backtest harness (§7); test Elo-Δ vs the current average-based signal. Log/CLI only,
+  no UI.
+- **Phase 2b — opponent intelligence.** Live two-season scrape (this + last) in the app.
+  Build the two-layer habit profile (§6.2) and predictability score (§6.3), cache it in D1.
+  Inspect a few known teams by hand to sanity-check ("does it correctly say team X is rigid
+  and team Y shuffles?").
+- **Phase 3 — recommender.** Habit sampler + exact 8! enumeration. Show suggested order on
+  the fixture screen with the §6.5 output: per-board expected score, expected match total
+  as a range out of 168, predictability score, stable vs volatile opponent slots, and a
+  recommended-vs-alternative total comparison. **Captain-PIN only, enforced server-side
+  (§6.5).**
+- **Phase 4 — explain.** Plain-English rationale per board ("you on board 6: their habitual
+  6 is strong, your strength banks ~15 here vs ~7 from a weaker player; an easy board would
+  have hit 21 anyway").
+
+Phases 3+ only proceed if Phase 2 backtest is convincing. **Status 2026-05-17:
+gate NOT passed by the data (§7.1) but overridden by an informed captain
+decision (§7.2) — Phases 2b/3/4 are GO, as honest decision-support.**
+
+---
+
+## 9. Open questions
+
+(A1/A2/A3 are now resolved — see §2.)
+
+1. Resolved: scope = **this + last season only** (§6.1) — older data risks a different
+   captain's habit, so deeper archive is deliberately out of scope, not a backlog item.
+2. Do we ever effectively *concede* a board (accept a likely heavy loss) to strengthen
+   others — and is there a sportsmanship floor on how visibly weak a slot can be?
+3. Captain override: do you often know a rival captain's habits better than the data? Need
+   a manual "I expect their strong players on X,Y,Z this week" input that overrides the
+   inferred profile.
+4. **Form vs. skill (§5.1):** Elo measures cumulative skill; selection currently uses
+   recent-form rolling average. Hybrid (Elo baseline + form adjustment)? Different answer
+   for ordering vs selection? Decide via backtest, not assumption.
+5. **Elo variant:** plain Elo vs Glicko-2 (explicit uncertainty)? Margin-aware update
+   (so a 19–21 moves rating less than a 4–21) given the league rewards chalks not wins?
+6. **Selection migration:** if the Elo ladder backtests well, do we also move the live
+   selection system onto it (retiring the difficulty-bonus α/caps)? Separate decision,
+   separate backtest — not bundled with this feature.
+
+---
+
+## 10. Risks
+
+- **Thin opponent data:** unreliable strength/habit → confident mis-allocation. Mitigate
+  with confidence flags + captain override (§9.3).
+- **They adapt:** a fixed deterministic offset gets countered. Low risk midweek, but the
+  model shouldn't be a frozen rule forever.
+- **Saturation mis-estimate:** if `E[score|loss,Δ]` is mis-calibrated, the "narrow loss
+  still banks points" logic could either over- or under-sacrifice boards. The backtest
+  must specifically stress this.
+- **Optics:** a visibly weak player on a board can look like throwing it, even when the
+  maths says lose-narrowly-and-bank-19. Needs a human sense-check before submission.
+- **Elo cold-start / shared ladder:** new or sparse players get unreliable ratings;
+  opponents from divisions we rarely meet may be poorly anchored to our scale. Glicko-style
+  uncertainty (§5.1) must surface this, not hide it behind a confident-looking number.
+- **Selection regression:** reusing the ladder in the live selection system could change
+  who plays. Treat as a separate, opt-in, separately-backtested change (§9.6) — never a
+  silent swap riding along with this feature.

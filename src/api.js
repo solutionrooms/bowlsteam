@@ -1,5 +1,6 @@
 import { getAllRatings, runSelection, determineDroppedPlayer } from './selection.js';
 import { scrapeAll, scrapeFixtures, scrapeMatch, scrapeOpponentDifficulty } from './scraper.js';
+import { recommendOrder } from './order.js';
 
 // --- Auth helper: resolve club + role from PIN header ---
 async function getClub(request, db) {
@@ -536,6 +537,62 @@ export async function handleApi(request, env) {
         ORDER BY s.is_selected DESC, s.rating_at_selection DESC
       `).bind(fixtureId).all();
       return json(sel.results);
+    }
+
+    // --- Player-order recommender (captain-only; player_order.prd §6, §7.2) ---
+    const orderMatch = path.match(/^\/api\/fixtures\/(\d+)\/order$/);
+    if (orderMatch && method === 'GET') {
+      // Tactical opponent intelligence — never expose to the read-only player
+      // PIN. Enforced here on the server, not just hidden in the UI (§6.5).
+      if (club.role !== 'captain') return error('Captain access required', 403);
+      const fixtureId = parseInt(orderMatch[1]);
+
+      const fix = await db.prepare(`
+        SELECT f.id, f.opponent, f.venue, s.team_id, t.name AS team_name
+        FROM fixtures f
+        JOIN seasons s ON f.season_id = s.id
+        JOIN teams t ON s.team_id = t.id
+        WHERE f.id = ? AND t.club_id = ?
+      `).bind(fixtureId, clubId).first();
+      if (!fix) return error('Fixture not found', 404);
+
+      const sel = await db.prepare(`
+        SELECT p.name FROM selections s JOIN players p ON s.player_id = p.id
+        WHERE s.fixture_id = ? AND s.is_selected = 1
+      `).bind(fixtureId).all();
+      if (!sel.results.length) {
+        return error('Run selection first — no selected players for this fixture', 400);
+      }
+
+      // Our full active roster — excluded from the opponent habit so a
+      // player who changed clubs isn't suggested as his own opponent.
+      const roster = await db.prepare(
+        'SELECT name FROM players WHERE team_id = ? AND is_active = 1'
+      ).bind(fix.team_id).all();
+
+      let lg;
+      try {
+        lg = await db.prepare(`
+          SELECT season_year, match_date, division, home_team, away_team, board,
+                 home_player, home_score, away_player, away_score, match_url
+          FROM league_games
+        `).all();
+      } catch (e) {
+        return error('Order data not loaded. Run `npm run ingest` then `npm run load`.', 503);
+      }
+      if (!lg.results.length) {
+        return error('Order data empty. Run `npm run ingest` then `npm run load`.', 503);
+      }
+
+      const rec = recommendOrder({
+        games: lg.results,
+        ourTeam: fix.team_name,
+        selected: sel.results.map(r => r.name),
+        ourPlayers: roster.results.map(r => r.name),
+        opponentTeam: fix.opponent,
+        venue: fix.venue,
+      });
+      return json({ fixture_id: fixtureId, opponent: fix.opponent, venue: fix.venue, ...rec });
     }
 
     // --- Import results preview from cgleague match URL ---
