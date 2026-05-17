@@ -159,18 +159,43 @@ export function recommendOrder(a) {
     if (!best || tot > best.tot) best = { tot, perm: perm.slice() };
   }
 
+  // Coherent opponent lineup: a player only plays ONE board, so resolve a
+  // one-to-one board→opponent assignment (strongest historical signal wins
+  // each player's single most-likely board). The expected-score maths above
+  // still uses the full per-slot distribution; this is display-only so the
+  // shown opposition can't list the same person twice.
+  const tuples = [];
+  for (let slot = 0; slot < n; slot++) {
+    const m = habit.slots[slotIds[slot]];
+    if (!m) continue;
+    for (const c of m.values()) {
+      tuples.push({ slot, key: norm(c.name), name: c.name, count: c.count, strength: c.strength });
+    }
+  }
+  tuples.sort((a2, b2) => b2.count - a2.count || b2.strength - a2.strength);
+  const oppBySlot = {};
+  const usedSlot = new Set();
+  const usedOpp = new Set();
+  for (const t of tuples) {
+    if (usedSlot.has(t.slot) || usedOpp.has(t.key)) continue;
+    oppBySlot[t.slot] = { name: t.name, strength: Math.round(t.strength) };
+    usedSlot.add(t.slot);
+    usedOpp.add(t.key);
+  }
+
   const order = [];
   let variance = 0;
   for (let slot = 0; slot < n; slot++) {
     const pi = best.perm[slot];
     const c = cell[pi][slot];
     variance += c.variance;
+    const opp = oppBySlot[slot];
     order.push({
       board: slotIds[slot],
       player: selected[pi],
       expected: Math.round(c.mean * 10) / 10,
-      assumed_opponent: c.assumed_opponent,
-      assumed_opponent_strength: c.assumed_opponent_strength,
+      assumed_opponent: opp ? opp.name : null,
+      assumed_opponent_strength: opp ? opp.strength : null,
     });
   }
 
