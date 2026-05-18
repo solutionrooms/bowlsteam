@@ -121,7 +121,15 @@ async function main() {
     try { existing = (JSON.parse(readFileSync(OUT, 'utf8')).games) || []; } catch { existing = []; }
   }
   const knownUrls = new Set(existing.map(g => g.match_url));
-  const yearsWithData = new Set(existing.map(g => g.season_year));
+  // Per (team, year): a past season is "captured" only for teams we already
+  // have that year's games for — so adding a NEW league later still pulls its
+  // past season instead of being skipped because another league has that year.
+  const normT = s => (s || '').toString().trim().toLowerCase().replace(/\s+/g, ' ');
+  const teamYearHas = new Set();
+  for (const g of existing) {
+    teamYearHas.add(`${normT(g.home_team)}|${g.season_year}`);
+    teamYearHas.add(`${normT(g.away_team)}|${g.season_year}`);
+  }
 
   console.error(`Teams (groups): ${ourTeams.join(', ')}`);
   console.error(`Years: ${years.join(', ')}`);
@@ -136,8 +144,9 @@ async function main() {
   const seenTeamPage = new Set();
   for (const g of groups) {
     for (const year of years) {
-      // A completed past season never gains matches — skip once captured.
-      if (!a.full && year < currentYear && yearsWithData.has(year)) {
+      // A completed past season never gains matches — skip only if THIS
+      // team already has that year's data (per-team, not global by year).
+      if (!a.full && year < currentYear && teamYearHas.has(`${normT(g.name)}|${year}`)) {
         console.error(`  ${g.name} ${year}: past season already captured — skipped`);
         continue;
       }
