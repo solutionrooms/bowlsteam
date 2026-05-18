@@ -235,6 +235,31 @@ export function recommendOrder(a) {
   for (let slot = 0; slot < n; slot++) naiveRaw += cell[naivePerm[slot]][slot].mean;
   const naiveShown = anchored && modelTotal > 0 ? naiveRaw * (shownTotal / modelTotal) : naiveRaw;
 
+  // Full opponent squad, ranked by strength. Strength shown as a chalk
+  // index = expected chalks vs an average player at neutral venue, so it's
+  // directly comparable to our own ratings (raw Elo also included).
+  const rosterMap = new Map();
+  for (const b of Object.keys(habit.slots)) {
+    for (const c of habit.slots[b].values()) {
+      const k = norm(c.name);
+      const r = rosterMap.get(k) || { name: c.name, elo: c.strength, games: 0, boards: {} };
+      r.games += c.count;
+      r.boards[b] = (r.boards[b] || 0) + c.count;
+      rosterMap.set(k, r);
+    }
+  }
+  const opponent_roster = [...rosterMap.values()].map(r => {
+    let usual = null, best = -1;
+    for (const [b, ct] of Object.entries(r.boards)) if (ct > best) { best = ct; usual = +b; }
+    return {
+      name: r.name,
+      strength: Math.round(predictScore(curve, r.elo - cfg.start) * 10) / 10,
+      elo: Math.round(r.elo),
+      games: r.games,
+      usual_board: usual,
+    };
+  }).sort((x, y) => y.elo - x.elo);
+
   // Honest range (§7.2): dominated by inherent game-day noise, not the
   // opponent-assignment variance. σ² = Σ(assignment var) + n·residualSd².
   const sd = Math.sqrt(variance + n * cfg.residualSd * cfg.residualSd);
@@ -253,6 +278,7 @@ export function recommendOrder(a) {
     gain_vs_naive: Math.round((shownTotal - naiveShown) * 10) / 10,
     predictability: Math.round(habit.predictability * 100) / 100,
     opponent_matches: habit.matches,
+    opponent_roster,
     calibration_basis,
     calibration_samples,
     predict_season: a.predictSeason || null,

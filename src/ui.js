@@ -1101,7 +1101,29 @@ function orderCard(fixtureId, rec, err) {
       <div class="text-sm text-muted mt-8">
         vs simple strongest-first order: \${rec.gain_vs_naive >= 0 ? '+' : ''}\${rec.gain_vs_naive} chalks
         \${rec.low_confidence ? '— marginal; the opponent doesn\\'t keep a fixed order' : ''}
-      </div>\`);
+      </div>
+      \${(rec.opponent_roster && rec.opponent_roster.length) ? \`
+      <details class="mt-8">
+        <summary style="cursor:pointer;font-weight:600;">Opponent squad — ranked (\${rec.opponent_roster.length})</summary>
+        <div class="text-sm text-muted" style="margin:6px 0;">
+          Strength = expected chalks vs an average player (same scale as our ratings).
+          Name-only identity, so treat as a rough scouting guide.
+        </div>
+        <table style="width:100%;border-collapse:collapse;">
+          <thead><tr class="text-sm text-muted" style="text-align:left;">
+            <th>#</th><th>Player</th><th style="text-align:right;">Strength</th>
+            <th style="text-align:right;">Games</th><th style="text-align:right;">Usual&nbsp;#</th>
+          </tr></thead>
+          <tbody>\${rec.opponent_roster.map((p, i) => \`
+            <tr>
+              <td>\${i + 1}</td>
+              <td style="white-space:nowrap;">\${p.name}</td>
+              <td style="text-align:right;font-weight:600;">\${p.strength.toFixed(1)}</td>
+              <td style="text-align:right;" class="text-muted">\${p.games}</td>
+              <td style="text-align:right;" class="text-muted">\${p.usual_board || '—'}</td>
+            </tr>\`).join('')}</tbody>
+        </table>
+      </details>\` : ''}\`);
 }
 
 async function applyOrderTotal(fixtureId, useModel) {
