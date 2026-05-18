@@ -74,6 +74,53 @@ export async function handleApi(request, env) {
       }
     }
 
+    // Create a new club (own captain + player PIN) and its first team in one
+    // call. Admin-key gated so this is owner provisioning, not open signup.
+    if (path === '/api/admin/clubs' && method === 'POST') {
+      const adminKey = env.ADMIN_KEY || 'bowlsteam-admin';
+      if (request.headers.get('Authorization') !== 'Bearer ' + adminKey) {
+        return error('Unauthorized', 401);
+      }
+      const body = await request.json();
+      const name = (body.name || '').trim();
+      const captainPin = (body.captain_pin || '').trim();
+      const playerPin = (body.player_pin || '').trim();
+      const teamName = (body.team_name || '').trim();
+      const leagueName = (body.league_name || '').trim();
+      const websiteUrl = (body.website_url || '').trim() || null;
+      if (!captainPin || !teamName || !leagueName) {
+        return error('captain_pin, team_name and league_name are required', 400);
+      }
+      if (playerPin && playerPin === captainPin) {
+        return error('Player PIN must differ from captain PIN', 400);
+      }
+      // PINs are resolved captain-first then player; avoid any cross-club
+      // ambiguity by rejecting collisions with existing PINs of either kind.
+      const capClash = await db.prepare(
+        'SELECT 1 FROM clubs WHERE pin = ? OR player_pin = ?'
+      ).bind(captainPin, captainPin).first();
+      if (capClash) return error('Captain PIN already in use', 409);
+      if (playerPin) {
+        const plClash = await db.prepare(
+          'SELECT 1 FROM clubs WHERE pin = ?'
+        ).bind(playerPin).first();
+        if (plClash) return error('Player PIN collides with an existing captain PIN', 409);
+      }
+      const cres = await db.prepare(
+        'INSERT INTO clubs (pin, player_pin, name) VALUES (?, ?, ?)'
+      ).bind(captainPin, playerPin || null, name || null).run();
+      const clubId2 = cres.meta.last_row_id;
+      const tres = await db.prepare(
+        'INSERT INTO teams (club_id, name, league_name, website_url) VALUES (?, ?, ?, ?)'
+      ).bind(clubId2, teamName, leagueName, websiteUrl).run();
+      return json({
+        club_id: clubId2,
+        team_id: tres.meta.last_row_id,
+        captain_pin: captainPin,
+        player_pin: playerPin || null,
+      }, 201);
+    }
+
     // === ALL OTHER ROUTES: require valid PIN ===
 
     const club = await getClub(request, db);

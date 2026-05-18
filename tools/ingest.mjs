@@ -84,23 +84,34 @@ async function main() {
   const currentYear = new Date().getFullYear();
   const years = a.years || [currentYear - 1, currentYear];
 
-  // Derive our team, league base, and the opponents we play.
-  let ourTeam = a.team;
-  let base = a.base;
-  if (!ourTeam || !base) {
-    const t = d1('SELECT name, website_url FROM teams ORDER BY id LIMIT 1')[0];
-    if (!t) { console.error('No team found in D1.'); process.exit(1); }
-    ourTeam = ourTeam || t.name;
-    if (!base) {
-      if (!t.website_url) { console.error('Team has no website_url; pass --base.'); process.exit(1); }
-      // Strip the team param down to just the league base.
-      const u = new URL(t.website_url);
-      u.searchParams.delete('T'); u.searchParams.delete('DB'); u.searchParams.delete('S');
-      base = u.toString();
+  const stripBase = u0 => {
+    const u = new URL(u0);
+    u.searchParams.delete('T'); u.searchParams.delete('DB'); u.searchParams.delete('S');
+    return u.toString();
+  };
+
+  // One group per team: each team has its own league base URL and its own
+  // opponents. league_games is a shared pool, so groups can overlap freely.
+  const groups = [];
+  if (a.team && a.base) {
+    const opp = d1('SELECT DISTINCT opponent FROM fixtures').map(r => r.opponent);
+    groups.push({ name: a.team, base: a.base, members: [a.team, ...opp.filter(o => o && o !== a.team)] });
+  } else {
+    const rows = d1('SELECT id, name, website_url FROM teams ORDER BY id');
+    if (!rows.length) { console.error('No teams found in D1.'); process.exit(1); }
+    for (const t of rows) {
+      if (!t.website_url) { console.error(`  skip "${t.name}": no website_url`); continue; }
+      const opp = d1(`SELECT DISTINCT f.opponent FROM fixtures f
+        JOIN seasons s ON f.season_id = s.id WHERE s.team_id = ${t.id}`).map(r => r.opponent);
+      groups.push({
+        name: t.name,
+        base: a.base || stripBase(t.website_url),
+        members: [t.name, ...opp.filter(o => o && o !== t.name)],
+      });
     }
+    if (!groups.length) { console.error('No teams with a website_url.'); process.exit(1); }
   }
-  const opponents = d1('SELECT DISTINCT opponent FROM fixtures').map(r => r.opponent);
-  const teams = [ourTeam, ...opponents.filter(o => o && o !== ourTeam)];
+  const ourTeams = groups.map(g => g.name);
 
   // Incremental: a recorded cgleague match is immutable, so reuse anything
   // we already stored and only chase genuinely new results (kind to the
@@ -112,44 +123,49 @@ async function main() {
   const knownUrls = new Set(existing.map(g => g.match_url));
   const yearsWithData = new Set(existing.map(g => g.season_year));
 
-  console.error(`Our team: ${ourTeam}`);
-  console.error(`Base: ${base}`);
+  console.error(`Teams (groups): ${ourTeams.join(', ')}`);
   console.error(`Years: ${years.join(', ')}`);
-  console.error(`Teams: ${teams.length} (us + ${teams.length - 1} opponents)`);
   console.error(a.full
     ? 'Mode: FULL re-scrape (--full)\n'
     : `Mode: incremental (${existing.length} board-rows already stored)\n`);
 
-  // Phase A — collect NEW match URLs only.
+  // Phase A — collect NEW match URLs only, across every team group. A team
+  // page can appear in more than one group (shared opponents / two of our
+  // teams in one league) — fetch each team-page once per (year).
   const matchMeta = new Map(); // match_url → { season_year, match_date }
-  for (const year of years) {
-    // A completed past season never gains matches — skip it once captured.
-    if (!a.full && year < currentYear && yearsWithData.has(year)) {
-      console.error(`  ${year}: past season already captured — skipped`);
-      continue;
-    }
-    for (const team of teams) {
-      const url = teamUrl(base, team, year, currentYear);
-      let html;
-      try {
-        html = await getText(url);
-      } catch (e) {
-        console.error(`  skip ${team} ${year}: ${e.message}`);
-        await sleep(a.delay);
+  const seenTeamPage = new Set();
+  for (const g of groups) {
+    for (const year of years) {
+      // A completed past season never gains matches — skip once captured.
+      if (!a.full && year < currentYear && yearsWithData.has(year)) {
+        console.error(`  ${g.name} ${year}: past season already captured — skipped`);
         continue;
       }
-      const fx = parseTeamFixtures(html, year);
-      let added = 0;
-      for (const f of fx) {
-        if (!f.completed) continue;                 // not played yet — don't fetch
-        if (knownUrls.has(f.match_url)) continue;     // immutable, already have it
-        if (!matchMeta.has(f.match_url)) {
-          matchMeta.set(f.match_url, { season_year: year, match_date: f.match_date });
-          added++;
+      for (const team of g.members) {
+        const url = teamUrl(g.base, team, year, currentYear);
+        if (seenTeamPage.has(url)) continue;
+        seenTeamPage.add(url);
+        let html;
+        try {
+          html = await getText(url);
+        } catch (e) {
+          console.error(`  skip ${team} ${year}: ${e.message}`);
+          await sleep(a.delay);
+          continue;
         }
+        const fx = parseTeamFixtures(html, year);
+        let added = 0;
+        for (const f of fx) {
+          if (!f.completed) continue;               // not played yet — don't fetch
+          if (knownUrls.has(f.match_url)) continue;   // immutable, already have it
+          if (!matchMeta.has(f.match_url)) {
+            matchMeta.set(f.match_url, { season_year: year, match_date: f.match_date });
+            added++;
+          }
+        }
+        console.error(`  [${g.name}] ${team} ${year}: ${fx.length} fixtures, +${added} new`);
+        await sleep(a.delay);
       }
-      console.error(`  ${team} ${year}: ${fx.length} fixtures, +${added} new matches`);
-      await sleep(a.delay);
     }
   }
 
@@ -207,7 +223,8 @@ async function main() {
 
   writeFileSync(OUT, JSON.stringify({
     meta: {
-      our_team: ourTeam,
+      our_team: ourTeams[0],
+      teams: ourTeams,
       years,
       generated: new Date().toISOString(),
       matches: matchCount,

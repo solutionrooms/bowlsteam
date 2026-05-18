@@ -216,10 +216,76 @@ function viewLogin() {
       <p class="text-sm text-muted mb-12">Enter your club PIN to get started.</p>
       <input type="text" id="pin-input" placeholder="Enter PIN" maxlength="10" style="text-align:center;font-size:1.3rem;letter-spacing:4px;">
       <button class="btn-primary mt-8" onclick="doLogin()">Enter</button>
+      <div class="mt-12"><a class="text-sm" onclick="viewAddTeam()" style="cursor:pointer;">Add a new league / team</a></div>
     </div>
   \`);
   document.getElementById('pin-input').focus();
   document.getElementById('pin-input').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+}
+
+function viewAddTeam() {
+  render(\`
+    <div class="topbar"><h1>BowlSteam</h1></div>
+    <div class="card">
+      <a class="back" onclick="viewLogin()">&larr; Back</a>
+      <h2>Add a new league / team</h2>
+      <p class="text-sm text-muted mb-12">Creates a separate, independent team with its
+        own captain and player PINs. Requires the admin key.</p>
+      <label class="text-sm">Admin key</label>
+      <input type="password" id="nt-admin" placeholder="Admin key">
+      <label class="text-sm">Club / team display name</label>
+      <input type="text" id="nt-name" placeholder="e.g. Westlands 2">
+      <label class="text-sm">League name</label>
+      <input type="text" id="nt-league" placeholder="e.g. Newcastle Mid-week">
+      <label class="text-sm">cgleague team URL (optional)</label>
+      <input type="text" id="nt-url" placeholder="https://www.cgleague.co.uk/team.php?L=...&T=...">
+      <label class="text-sm">Captain PIN</label>
+      <input type="text" id="nt-cap" maxlength="10" placeholder="Captain PIN">
+      <label class="text-sm">Player PIN (read-only access)</label>
+      <input type="text" id="nt-player" maxlength="10" placeholder="Player PIN">
+      <button class="btn-success mt-12" onclick="doAddTeam()">Create team</button>
+    </div>
+  \`);
+}
+
+async function doAddTeam() {
+  const v = id => document.getElementById(id).value.trim();
+  const adminKey = v('nt-admin');
+  const payload = {
+    name: v('nt-name'),
+    team_name: v('nt-name'),
+    league_name: v('nt-league'),
+    website_url: v('nt-url') || null,
+    captain_pin: v('nt-cap'),
+    player_pin: v('nt-player'),
+  };
+  if (!adminKey) { showToast('Admin key required', true); return; }
+  if (!payload.team_name || !payload.league_name || !payload.captain_pin) {
+    showToast('Name, league and captain PIN are required', true);
+    return;
+  }
+  try {
+    const res = await fetch('/api/admin/clubs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + adminKey },
+      body: JSON.stringify(payload),
+    });
+    const d = await res.json();
+    if (!res.ok) { showToast(d.error || 'Failed to create team', true); return; }
+    render(\`
+      <div class="topbar"><h1>BowlSteam</h1></div>
+      <div class="card">
+        <h2>Team created</h2>
+        <p class="text-sm mb-8"><strong>\${payload.team_name}</strong> is ready.</p>
+        <p class="text-sm">Captain PIN: <strong>\${d.captain_pin}</strong></p>
+        <p class="text-sm mb-12">Player PIN: <strong>\${d.player_pin || '(none)'}</strong></p>
+        <p class="text-sm text-muted mb-12">Log in with the captain PIN to run setup and selection.</p>
+        <button class="btn-primary" onclick="viewLogin()">Go to login</button>
+      </div>
+    \`);
+  } catch (e) {
+    showToast('Failed to create team', true);
+  }
 }
 
 async function doLogin() {
@@ -303,6 +369,18 @@ function route() {
 // ==========================================
 
 function viewSetup() {
+  // Reuse the club's existing team (e.g. one created by "Add a new league /
+  // team") instead of inserting a duplicate row. Only on fresh entry; once
+  // teamId is set the wizard's update path is used. Clubs with no team yet
+  // keep the original create-on-setup behaviour.
+  if (setup.step === 1 && setup.teamId === null && state.teams && state.teams.length > 0) {
+    const t = state.teams[0];
+    setup.teamId = t.id;
+    setup.teamName = t.name || '';
+    setup.leagueName = t.league_name || '';
+    setup.url = t.website_url || '';
+  }
+
   const steps = [1,2,3,4,5];
   const stepBar = '<div class="steps">' + steps.map(s =>
     '<div class="step ' + (s < setup.step ? 'done' : s === setup.step ? 'active' : '') + '"></div>'
