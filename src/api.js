@@ -709,6 +709,14 @@ export async function handleApi(request, env) {
         ).bind(fixture.season_id).first() : null;
         const maxScore = config ? config.max_score : 21;
 
+        // An all-zero submission means the match hasn't actually been played
+        // (e.g. importing a cgleague match page before scores are posted).
+        // Reject it so the fixture isn't wrongly marked completed.
+        const anyReal = body.results.some(r => r.player_score > 0 || r.opponent_score > 0);
+        if (body.results.length > 0 && !anyReal) {
+          return error('All scores are 0 — the match has not been played yet. Not saved.', 400);
+        }
+
         for (const r of body.results) {
           if (r.player_score < 0 || r.player_score > maxScore ||
               r.opponent_score < 0 || r.opponent_score > maxScore) {
