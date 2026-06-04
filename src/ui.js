@@ -1163,7 +1163,11 @@ async function copyOrder(fixtureId) {
 
 async function viewRatings() {
   if (!state.seasonId) { navigate('/'); return; }
-  const ratings = await api('/ratings?season_id=' + state.seasonId);
+  const [ratings, config] = await Promise.all([
+    api('/ratings?season_id=' + state.seasonId),
+    api('/seasons/' + state.seasonId + '/config'),
+  ]);
+  const w = (config && config.rating_window) || 4;
 
   const cores = ratings.filter(r => !r.is_reserve);
   const reserves = ratings.filter(r => r.is_reserve);
@@ -1182,8 +1186,8 @@ async function viewRatings() {
       <td style="font-weight:600;">\${r.rating.toFixed(1)}</td>
       <td class="text-sm" style="white-space:nowrap;">\${record}</td>
       <td class="text-sm text-muted" style="white-space:nowrap;">\${points}</td>
-      \${recentScoreCells(r)}
-      \${recentBonusCells(r)}
+      \${recentScoreCells(r, w)}
+      \${recentBonusCells(r, w)}
     </tr>
   \`;};
 
@@ -1220,12 +1224,12 @@ async function viewRatings() {
               <th rowspan="2">Avg+diff</th>
               <th rowspan="2">W-L</th>
               <th rowspan="2">Pts</th>
-              <th colspan="4" style="border-left:1px solid #ddd;text-align:center;">Last 4 scores</th>
-              <th colspan="4" style="border-left:1px solid #ddd;text-align:center;">Last 4 difficulty bonus</th>
+              <th colspan="\${w}" style="border-left:1px solid #ddd;text-align:center;">Last \${w} scores</th>
+              <th colspan="\${w}" style="border-left:1px solid #ddd;text-align:center;">Last \${w} difficulty bonus</th>
             </tr>
             <tr style="white-space:nowrap;font-size:0.7rem;color:#888;text-align:center;">
-              <th style="border-left:1px solid #ddd;text-align:center;">-3</th><th style="text-align:center;">-2</th><th style="text-align:center;">-1</th><th style="text-align:center;">last</th>
-              <th style="border-left:1px solid #ddd;text-align:center;">-3</th><th style="text-align:center;">-2</th><th style="text-align:center;">-1</th><th style="text-align:center;">last</th>
+              \${recentSubHeaders(w)}
+              \${recentSubHeaders(w)}
             </tr>
           </thead>
           <tbody>\${coreRows}</tbody>
@@ -1243,12 +1247,12 @@ async function viewRatings() {
               <th rowspan="2">Avg+diff</th>
               <th rowspan="2">W-L</th>
               <th rowspan="2">Pts</th>
-              <th colspan="4" style="border-left:1px solid #ddd;text-align:center;">Last 4 scores</th>
-              <th colspan="4" style="border-left:1px solid #ddd;text-align:center;">Last 4 difficulty bonus</th>
+              <th colspan="\${w}" style="border-left:1px solid #ddd;text-align:center;">Last \${w} scores</th>
+              <th colspan="\${w}" style="border-left:1px solid #ddd;text-align:center;">Last \${w} difficulty bonus</th>
             </tr>
             <tr style="white-space:nowrap;font-size:0.7rem;color:#888;text-align:center;">
-              <th style="border-left:1px solid #ddd;text-align:center;">-3</th><th style="text-align:center;">-2</th><th style="text-align:center;">-1</th><th style="text-align:center;">last</th>
-              <th style="border-left:1px solid #ddd;text-align:center;">-3</th><th style="text-align:center;">-2</th><th style="text-align:center;">-1</th><th style="text-align:center;">last</th>
+              \${recentSubHeaders(w)}
+              \${recentSubHeaders(w)}
             </tr>
           </thead>
           <tbody>\${reserveRows}</tbody>
@@ -1267,11 +1271,13 @@ async function viewRatings() {
 
 async function viewPlayer(playerId) {
   if (!state.seasonId) { navigate('/'); return; }
-  const [players, timeline, ratings] = await Promise.all([
+  const [players, timeline, ratings, config] = await Promise.all([
     api('/players?team_id=' + state.teamId),
     api('/players/' + playerId + '/timeline?season_id=' + state.seasonId),
     api('/ratings?season_id=' + state.seasonId),
+    api('/seasons/' + state.seasonId + '/config'),
   ]);
+  const w = (config && config.rating_window) || 4;
 
   const player = players.find(p => p.id === playerId);
   const rating = ratings.find(r => r.player_id === playerId);
@@ -1353,8 +1359,8 @@ async function viewPlayer(playerId) {
           </div>
         \` : ''}
         \${rating.recent_entries && rating.recent_entries.length ? \`
-          <div class="text-sm text-muted mt-8">Last 4 scores: \${fmtRecent(rating)}</div>
-          <div class="text-sm text-muted mt-8">Last 4 difficulty bonus: \${fmtRecentBonuses(rating)}</div>
+          <div class="text-sm text-muted mt-8">Last \${w} scores: \${fmtRecent(rating)}</div>
+          <div class="text-sm text-muted mt-8">Last \${w} difficulty bonus: \${fmtRecentBonuses(rating)}</div>
         \` : ''}
       \` : ''}
     </div>
@@ -1362,7 +1368,7 @@ async function viewPlayer(playerId) {
       <h3>Season Timeline</h3>
       \${timeline.length ? \`
         <table>
-          <thead><tr><th>Date</th><th>vs</th><th>V</th><th>Avail</th><th>Status</th><th>Result</th><th>Bonus</th><th>Avg+diff</th><th>Last 4 scores</th></tr></thead>
+          <thead><tr><th>Date</th><th>vs</th><th>V</th><th>Avail</th><th>Status</th><th>Result</th><th>Bonus</th><th>Avg+diff</th><th>Last \${w} scores</th></tr></thead>
           <tbody>\${rows}</tbody>
         </table>
       \` : '<div class="empty">No fixtures yet</div>'}
@@ -1884,7 +1890,11 @@ async function copySelection(fixtureId) {
 }
 
 async function copyRatings() {
-  const ratings = await api('/ratings?season_id=' + state.seasonId);
+  const [ratings, config] = await Promise.all([
+    api('/ratings?season_id=' + state.seasonId),
+    api('/seasons/' + state.seasonId + '/config'),
+  ]);
+  const w = (config && config.rating_window) || 4;
   const cores = ratings.filter(r => !r.is_reserve);
   const totW = cores.reduce((s, r) => s + (r.wins || 0), 0);
   const totL = cores.reduce((s, r) => s + (r.losses || 0), 0);
@@ -1897,49 +1907,65 @@ async function copyRatings() {
 
   const nameWidth = Math.min(16, Math.max(...cores.map(r => r.name.length), 6));
 
-  // Last 4 cells, padded to 4 with leading blanks. Newest is rightmost (chronological).
-  const scoreCells = (r) => {
-    const entries = (r.recent_entries || []).slice().reverse();
-    const pad = Math.max(0, 4 - entries.length);
-    const items = [];
-    for (let i = 0; i < pad; i++) items.push(null);
-    for (const e of entries) items.push(e);
-    return items.map(e => {
-      if (e === null) return '  ';
-      if (e.type === 'reserve') return ' R';
-      if (e.type === 'away') return ' A';
-      return String(e.raw_score !== undefined ? e.raw_score : e.score).padStart(2);
-    }).join(' ');
+  // Column widths auto-size to the data so 3-digit point totals don't shift
+  // a row past the rest (e.g. 152-101 is 7 chars while others are 6).
+  const recStrs = cores.map(r => r.games_played > 0 ? (r.wins + '-' + r.losses) : '-');
+  const ptsStrs = cores.map(r => r.games_played > 0 ? (r.points_for + '-' + r.points_against) : '-');
+  const recW = Math.max(3, ...recStrs.map(s => s.length));
+  const ptsW = Math.max(3, ...ptsStrs.map(s => s.length));
+  const numW = 2;
+  const avgW = 5;
+  const cellW = 4; // wide enough for 'last' label and '+1.0' bonus
+
+  // Recents follow the season's rating_window — w columns labelled
+  //   -(w-1), …, -1, last  with the newest entry on the right.
+  const labels = [];
+  for (let i = 0; i < w; i++) labels.push(i === w - 1 ? 'last' : '-' + (w - 1 - i));
+
+  const padScore = e => {
+    if (e === null) return ' '.repeat(cellW);
+    if (e.type === 'reserve') return 'R'.padStart(cellW);
+    if (e.type === 'away') return 'A'.padStart(cellW);
+    return String(e.raw_score !== undefined ? e.raw_score : e.score).padStart(cellW);
   };
-  const bonusCells = (r) => {
+  const padBonus = e => {
+    if (e === null) return ' '.repeat(cellW);
+    if (e.type !== 'played' || e.difficulty === null || e.difficulty === undefined) return '—'.padStart(cellW);
+    const b = e.bonus || 0;
+    if (b === 0) return '0'.padStart(cellW);
+    const sign = b > 0 ? '+' : '';
+    return (sign + b.toFixed(1)).padStart(cellW);
+  };
+  const renderCells = (r, fmt) => {
     const entries = (r.recent_entries || []).slice().reverse();
-    const pad = Math.max(0, 4 - entries.length);
+    const pad = Math.max(0, w - entries.length);
     const items = [];
     for (let i = 0; i < pad; i++) items.push(null);
     for (const e of entries) items.push(e);
-    return items.map(e => {
-      if (e === null) return '    ';
-      if (e.type !== 'played' || e.difficulty === null || e.difficulty === undefined) return '   —';
-      const b = e.bonus || 0;
-      if (b === 0) return '   0';
-      const sign = b > 0 ? '+' : '';
-      return (sign + b.toFixed(1)).padStart(4);
-    }).join(' ');
+    return items.map(fmt).join(' ');
   };
 
-  // Header line widths: each cell padded to align with body.
-  const header = ' #  ' + 'Player'.padEnd(nameWidth) +
-    '  Avg+d  W-L   Pts     -3 -2 -1 last   bonus -3   -2   -1  last\\n';
+  const groupHeader = labels.map(l => l.padStart(cellW)).join(' ');
+  const SEP = '   bonus ';                       // between score and bonus groups
+  const SEP_BODY = ' '.repeat(SEP.length);
+
+  const header =
+    ' ' + '#'.padStart(numW) + ' ' +
+    'Player'.padEnd(nameWidth) + '  ' +
+    'Avg+d'.padStart(avgW) + '  ' +
+    'W-L'.padStart(recW) + '  ' +
+    'Pts'.padStart(ptsW) + '   ' +
+    groupHeader + SEP + groupHeader + '\\n';
 
   let body = '';
   cores.forEach((r, i) => {
-    const num = String(i + 1).padStart(2);
+    const num = String(i + 1).padStart(numW);
     const name = r.name.length > nameWidth ? r.name.slice(0, nameWidth) : r.name.padEnd(nameWidth);
-    const avg = r.rating.toFixed(1).padStart(5);
-    const rec = (r.games_played > 0 ? (r.wins + '-' + r.losses) : '-').padStart(4);
-    const pts = (r.games_played > 0 ? (r.points_for + '-' + r.points_against) : '-').padStart(6);
-    body += ' ' + num + ' ' + name + '  ' + avg + '  ' + rec + '  ' + pts +
-      '   ' + scoreCells(r) + '         ' + bonusCells(r) + '\\n';
+    const avg = r.rating.toFixed(1).padStart(avgW);
+    const rec = recStrs[i].padStart(recW);
+    const pts = ptsStrs[i].padStart(ptsW);
+    body += ' ' + num + ' ' + name + '  ' + avg + '  ' + rec + '  ' + pts + '   ' +
+      renderCells(r, padScore) + SEP_BODY + renderCells(r, padBonus) + '\\n';
   });
 
   let text = '*' + teamName + ' — Ratings*\\n';
@@ -1988,9 +2014,10 @@ function fmtRecentBonuses(r) {
 
 // Returns 4 <td> cells with the player's last 4 scores, in chronological order
 // (oldest → newest). Pads on the left when the player has fewer than 4 entries.
-function recentScoreCells(r) {
+function recentScoreCells(r, w) {
+  w = w || 4;
   const entries = (r.recent_entries || []).slice().reverse();
-  const pad = Math.max(0, 4 - entries.length);
+  const pad = Math.max(0, w - entries.length);
   const items = [];
   for (let i = 0; i < pad; i++) items.push(null);
   for (const e of entries) items.push(e);
@@ -2005,10 +2032,22 @@ function recentScoreCells(r) {
   }).join('');
 }
 
+// Labels for the recents sub-header: -(w-1) … -1, last.
+function recentSubHeaders(w) {
+  let out = '';
+  for (let i = 0; i < w; i++) {
+    const label = (i === w - 1) ? 'last' : '-' + (w - 1 - i);
+    const border = i === 0 ? 'border-left:1px solid #ddd;' : '';
+    out += '<th style="' + border + 'text-align:center;">' + label + '</th>';
+  }
+  return out;
+}
+
 // Returns 4 <td> cells with the player's last 4 difficulty bonuses, chronologically.
-function recentBonusCells(r) {
+function recentBonusCells(r, w) {
+  w = w || 4;
   const entries = (r.recent_entries || []).slice().reverse();
-  const pad = Math.max(0, 4 - entries.length);
+  const pad = Math.max(0, w - entries.length);
   const items = [];
   for (let i = 0; i < pad; i++) items.push(null);
   for (const e of entries) items.push(e);
