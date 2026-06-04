@@ -1433,6 +1433,7 @@ async function viewRules() {
   const alpha = cfg && cfg.difficulty_weight !== undefined && cfg.difficulty_weight !== null ? cfg.difficulty_weight : 1;
   const winCap = cfg && cfg.win_bonus_cap !== undefined && cfg.win_bonus_cap !== null ? cfg.win_bonus_cap : 1;
   const lossCap = cfg && cfg.loss_penalty_cap !== undefined && cfg.loss_penalty_cap !== null ? cfg.loss_penalty_cap : 1;
+  const lossCredCap = cfg && cfg.loss_credit_cap !== undefined && cfg.loss_credit_cap !== null ? cfg.loss_credit_cap : 3;
   const maxScore = cfg && cfg.max_score !== undefined && cfg.max_score !== null ? cfg.max_score : 21;
 
   render(\`
@@ -1467,7 +1468,7 @@ async function viewRules() {
     </div>
 
     <div class="card">
-      <h3>Difficulty bonus &nbsp;<span class="text-sm text-muted" style="font-weight:400;">(α = \${alpha}, win cap = +\${winCap}, loss cap = −\${lossCap})</span></h3>
+      <h3>Difficulty bonus &nbsp;<span class="text-sm text-muted" style="font-weight:400;">(α = \${alpha}, win cap = +\${winCap}, loss credit cap = +\${lossCredCap}, loss penalty cap = −\${lossCap})</span></h3>
       <p class="text-sm" style="line-height:1.5;margin-bottom:8px;">
         Not all opponents are equal. We use the opponent's <strong>avg net chalks per game before this match</strong> as the difficulty signal (<code>opp_diff</code>).
         Each played score gets a bonus added to the raw chalks before averaging.
@@ -1476,12 +1477,13 @@ async function viewRules() {
       <h4 style="margin-top:12px;">Rules:</h4>
       <ol class="text-sm" style="line-height:1.7;padding-left:20px;">
         <li><strong>Raw bonus = α × opp_diff.</strong> Strong opp gives positive credit, weak opp gives a negative dock — whether you won or lost.</li>
-        <li><strong>Positive cap on WINS only:</strong> if you won, the positive bonus is clamped to at most <strong>+\${winCap}</strong>. On losses, positive bonus is uncapped (only rule 4 limits it).</li>
+        <li><strong>Positive cap on WINS:</strong> if you won, the positive bonus is clamped to at most <strong>+\${winCap}</strong>.</li>
+        <li><strong>Positive cap on LOSSES:</strong> if you lost (positive bonus = credit for losing to a strong opponent), the bonus is clamped to at most <strong>+\${lossCredCap}</strong> — a loss should never be made nearly as good as a win.</li>
         <li><strong>Negative cap:</strong> any negative bonus is clamped to at least <strong>−\${lossCap}</strong> (regardless of W/L).</li>
-        <li><strong>Score bounds:</strong> effective score is bounded to <strong>[0, \${maxScore + winCap}]</strong> on wins (so a 21-X win can take a +\${winCap} bonus → max \${maxScore + winCap}) and <strong>[0, \${maxScore}]</strong> on losses (a loss can never beat a winning effective score).</li>
+        <li><strong>Score bounds:</strong> effective score is bounded to <strong>[0, \${maxScore + winCap}]</strong> on wins (so a 21-X win can take a +\${winCap} bonus → max \${maxScore + winCap}) and <strong>[0, \${maxScore}]</strong> on losses.</li>
       </ol>
 
-      <h4 style="margin-top:12px;">Examples (with current α = \${alpha}, win cap = \${winCap}, loss cap = \${lossCap}):</h4>
+      <h4 style="margin-top:12px;">Examples (with current α = \${alpha}, win cap = \${winCap}, loss credit cap = \${lossCredCap}, loss penalty cap = \${lossCap}):</h4>
       <p class="text-sm text-muted mt-8">
         <em>A — win 21-X vs strong opp (raw 21, opp_diff +6):</em>
         raw_bonus = \${alpha} × 6 = \${(alpha * 6).toFixed(2)} → rule 2 caps at +\${winCap}. Win ceiling is \${maxScore + winCap}, so the +\${winCap} fits.
@@ -1494,13 +1496,15 @@ async function viewRules() {
       </p>
       <p class="text-sm text-muted mt-8">
         <em>C — loss vs strong opp (raw 10, opp_diff +6):</em>
-        raw_bonus = \${alpha} × 6 = <strong>+\${(alpha * 6).toFixed(2)}</strong> (no positive cap on losses).
-        Effective = <strong>\${Math.min(10 + alpha * 6, maxScore).toFixed(2)}</strong>.
+        raw_bonus = \${alpha} × 6 = \${(alpha * 6).toFixed(2)} → rule 2b caps at <strong>+\${lossCredCap}</strong>; ceiling allows up to \${maxScore - 10}.
+        Final bonus = <strong>+\${Math.min(alpha * 6, lossCredCap, maxScore - 10).toFixed(2)}</strong>.
+        Effective = <strong>\${(10 + Math.min(alpha * 6, lossCredCap, maxScore - 10)).toFixed(2)}</strong>.
       </p>
       <p class="text-sm text-muted mt-8">
         <em>D — close loss vs very strong opp (raw 20, opp_diff +10):</em>
-        raw_bonus = \${alpha} × 10 = \${(alpha * 10).toFixed(2)}; rule 4 ceiling limits effective to \${maxScore} → bonus = <strong>+\${(maxScore - 20).toFixed(2)}</strong>.
-        Effective = <strong>\${maxScore}</strong>.
+        raw_bonus = \${alpha} × 10 = \${(alpha * 10).toFixed(2)} → rule 2b caps at +\${lossCredCap}; ceiling \${maxScore} only allows +\${maxScore - 20} on top of a 20.
+        Final bonus = <strong>+\${Math.min(alpha * 10, lossCredCap, maxScore - 20).toFixed(2)}</strong>.
+        Effective = <strong>\${(20 + Math.min(alpha * 10, lossCredCap, maxScore - 20)).toFixed(2)}</strong>.
       </p>
       <p class="text-sm text-muted mt-8">
         <em>E — loss vs weak opp (raw 5, opp_diff −10):</em>
@@ -1642,6 +1646,7 @@ async function viewSettings(seasonId) {
       \${field('Difficulty weight (α)', 'difficulty_weight')}
       \${field('Win bonus cap (max + bonus when you win)', 'win_bonus_cap')}
       \${field('Loss penalty cap (max − bonus when you lose)', 'loss_penalty_cap')}
+      \${field('Loss credit cap (max + bonus for losing to a strong opponent)', 'loss_credit_cap')}
       <p class="text-sm text-muted mt-8">
         Bonus rewards playing strong opponents and penalises easy losses. Caps prevent extreme single-game swings.
         Set α = 0 to disable bonuses entirely.
@@ -1809,7 +1814,7 @@ async function syncFixtures() {
 }
 
 async function saveConfig(seasonId) {
-  const fields = ['squad_size', 'reserve_count', 'pick_count', 'max_score', 'rating_window', 'default_rating', 'reserve_score', 'away_score', 'drop_count', 'drop_duration', 'difficulty_weight', 'win_bonus_cap', 'loss_penalty_cap'];
+  const fields = ['squad_size', 'reserve_count', 'pick_count', 'max_score', 'rating_window', 'default_rating', 'reserve_score', 'away_score', 'drop_count', 'drop_duration', 'difficulty_weight', 'win_bonus_cap', 'loss_penalty_cap', 'loss_credit_cap'];
   const toggles = ['drop_enabled', 'drop_carry_over'];
   const body = {};
   for (const f of fields) {

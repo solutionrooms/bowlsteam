@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS season_config (
     drop_carry_over INTEGER NOT NULL DEFAULT 0,
     difficulty_weight REAL NOT NULL DEFAULT 1.0,
     win_bonus_cap REAL NOT NULL DEFAULT 1.0,
-    loss_penalty_cap REAL NOT NULL DEFAULT 1.0
+    loss_penalty_cap REAL NOT NULL DEFAULT 1.0,
+    loss_credit_cap REAL NOT NULL DEFAULT 3.0
 );
 
 CREATE TABLE IF NOT EXISTS fixtures (

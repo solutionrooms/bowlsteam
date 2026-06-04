@@ -325,7 +325,7 @@ export async function handleApi(request, env) {
         const fields = ['squad_size', 'reserve_count', 'pick_count', 'max_score',
           'rating_window', 'default_rating', 'reserve_score', 'away_score',
           'drop_enabled', 'drop_count', 'drop_duration', 'drop_carry_over',
-          'difficulty_weight', 'win_bonus_cap', 'loss_penalty_cap'];
+          'difficulty_weight', 'win_bonus_cap', 'loss_penalty_cap', 'loss_credit_cap'];
         const sets = [];
         const vals = [];
         for (const f of fields) {
@@ -907,6 +907,8 @@ export async function handleApi(request, env) {
         ? config.win_bonus_cap : Infinity;
       const lossCap = config.loss_penalty_cap !== undefined && config.loss_penalty_cap !== null
         ? config.loss_penalty_cap : Infinity;
+      const lossCredCap = config.loss_credit_cap !== undefined && config.loss_credit_cap !== null
+        ? config.loss_credit_cap : Infinity;
       const maxScore = config.max_score !== undefined && config.max_score !== null
         ? config.max_score : 21;
 
@@ -945,6 +947,7 @@ export async function handleApi(request, env) {
               const won = r.player_score > r.opponent_score;
               bonus = alpha * opponentDifficulty;
               if (bonus > 0 && won && bonus > winCap) bonus = winCap;
+              if (bonus > 0 && !won && bonus > lossCredCap) bonus = lossCredCap;
               if (bonus < 0 && bonus < -lossCap) bonus = -lossCap;
               const ceiling = won ? maxScore + winCap : maxScore;
               if (r.player_score + bonus > ceiling) bonus = ceiling - r.player_score;

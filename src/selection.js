@@ -70,6 +70,8 @@ export async function getAllRatings(db, seasonId, teamId, config) {
     ? config.win_bonus_cap : Infinity;
   const lossCap = config.loss_penalty_cap !== undefined && config.loss_penalty_cap !== null
     ? config.loss_penalty_cap : Infinity;
+  const lossCredCap = config.loss_credit_cap !== undefined && config.loss_credit_cap !== null
+    ? config.loss_credit_cap : Infinity;
   const maxScore = config.max_score !== undefined && config.max_score !== null
     ? config.max_score : 21;
 
@@ -83,17 +85,18 @@ export async function getAllRatings(db, seasonId, teamId, config) {
       const r = resultsByFix[f.id] && resultsByFix[f.id][p.id];
       if (r !== undefined) {
         // bonus = α × opp_diff, then:
-        //   positive bonus on a WIN is capped at +winCap
-        //   positive bonus on a LOSS is uncapped (only the ceiling limits it)
-        //   negative bonus (any) capped at -lossCap
-        //   ceiling: wins can reach maxScore + winCap (so a 21-X win can take a +1 bonus);
-        //            losses are capped at maxScore.
+        //   positive bonus on a WIN  capped at +winCap
+        //   positive bonus on a LOSS capped at +lossCredCap (a loss should
+        //                            not be made nearly as good as a win)
+        //   negative bonus (any)     capped at -lossCap
+        //   ceiling: wins can reach maxScore + winCap; losses capped at maxScore.
         //   floor: 0 in all cases.
         let bonus = 0;
         if (r.difficulty !== null && r.difficulty !== undefined) {
           const won = r.score > r.opp;
           bonus = alpha * r.difficulty;
           if (bonus > 0 && won && bonus > winCap) bonus = winCap;
+          if (bonus > 0 && !won && bonus > lossCredCap) bonus = lossCredCap;
           if (bonus < 0 && bonus < -lossCap) bonus = -lossCap;
           const ceiling = won ? maxScore + winCap : maxScore;
           if (r.score + bonus > ceiling) bonus = ceiling - r.score;
